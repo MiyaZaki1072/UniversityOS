@@ -6,7 +6,7 @@ A personal university planner: semesters, courses, timetable, gradebook, calenda
 
 ## Status
 
-Frontend design system and Dashboard (sample data) are done. Backend work is next.
+Frontend design system, Dashboard (sample data), backend skeleton, and Docker Compose setup are ready.
 
 ## Start here
 
@@ -17,12 +17,47 @@ Frontend design system and Dashboard (sample data) are done. Backend work is nex
 | Import courses with AI | [`docs/AI_IMPORT_GUIDE.md`](docs/AI_IMPORT_GUIDE.md) |
 | Work on the frontend | [`frontend/README.md`](frontend/README.md) |
 
-## Run the frontend now
+## Run with Docker
+
+1. Copy the example environment file and set a secret key:
+
+```bash
+cp .env.example .env
+```
+
+2. Build and start PostgreSQL, the Django backend, and the Nginx frontend server:
+
+```bash
+docker compose up --build
+```
+
+- Frontend: `http://localhost:8080`
+- Health check: `http://localhost:8080/api/health/`
+
+For production (without development overrides or host database ports):
+
+```bash
+docker compose -f docker-compose.yml up -d --build
+```
+
+## Run locally for development
+
+Start PostgreSQL in Docker, then run the backend and frontend directly:
+
+```bash
+docker compose up -d db
+
+cd backend
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements-dev.txt
+python manage.py migrate
+python manage.py runserver        # http://localhost:8000
+```
+
+In a second terminal:
 
 ```bash
 cd frontend
 npm install
-npm run dev        # http://localhost:5173 — sample data until the API exists
+npm run dev                       # http://localhost:5173 (proxies /api to :8000)
 ```
-
-Docker and backend instructions will be added with the backend.
