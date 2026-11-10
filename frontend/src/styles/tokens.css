@@ -1,0 +1,74 @@
+/*
+ * University OS — design tokens
+ * One theme: deep TVA browns lit by warm amber, with orange and mustard accents.
+ * Every color, font, radius and shadow in the app comes from here.
+ */
+
+:root {
+  /* ---------- Surfaces (dark wood + leather) ---------- */
+  --color-bg: #1c140f;
+  --color-surface: #261b15;
+  --color-surface-2: #33251c;
+  --color-surface-sunken: #20170f;
+  --color-rule: #3b2c22; /* hairline grid / table dividers */
+  --color-border: #4a382b;
+  --color-border-strong: #7a6350; /* heavy rules, input borders */
+
+  /* ---------- Ink (aged paper) ---------- */
+  --color-ink: #ecdfc6;
+  --color-ink-muted: #b09d84; /* 6:1 on surface */
+  --color-ink-faint: #7c6a57; /* decorative only, never body text */
+
+  /* ---------- Accents ---------- */
+  --color-accent: #d8693a; /* TVA orange — marks, rules, indicators */
+  --color-accent-strong: #e57d4d; /* orange text on brown (AA) */
+  --color-accent-fill: #d0642f; /* primary button fill */
+  --color-accent-fg: #1a110b; /* text on orange */
+  --color-accent-wash: #3d2419;
+
+  --color-mustard: #d9a64a;
+  --color-mustard-ink: #e3b55e;
+  --color-mustard-wash: #392b17;
+
+  --color-olive: #8c8a5e;
+  --color-sage: #9faa80;
+  --color-sage-ink: #b2bd93;
+  --color-sage-wash: #262a1b;
+
+  --color-danger: #e98b70;
+  --color-danger-wash: #3e1f18;
+
+  /* ---------- Consoles (sidebar, exam panel) — the darkest wood ---------- */
+  --color-walnut: #130d09;
+  --color-walnut-2: #21170f;
+  --color-walnut-rule: #33261c;
+  --color-on-walnut: #ecdfc6;
+  --color-on-walnut-muted: #9d8a73;
+
+  /* ---------- Overlay scrim ---------- */
+  --color-scrim: rgb(8 5 3 / 0.7);
+
+  /* ---------- Typography ---------- */
+  --font-display: 'Jost', 'IBM Plex Sans Thai', 'Futura', 'Century Gothic', system-ui, sans-serif;
+  --font-body: 'IBM Plex Sans', 'IBM Plex Sans Thai', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+
+  /* ---------- Shape ---------- */
+  --radius-xs: 2px;
+  --radius-sm: 3px;
+  --radius-md: 4px;
+
+  --shadow-raised: 0 1px 0 rgb(0 0 0 / 0.35), 0 2px 8px -2px rgb(0 0 0 / 0.45);
+  --shadow-overlay: 0 16px 40px -8px rgb(0 0 0 / 0.7);
+
+  /* ---------- Motion ---------- */
+  --ease-mech: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --dur-fast: 120ms;
+  --dur-med: 200ms;
+
+  /* ---------- Atmosphere ---------- */
+  --grain-opacity: 0.06;
+  --lamp-glow: rgb(216 105 58 / 0.09); /* warm overhead light at the top of the page */
+
+  color-scheme: dark;
+}
