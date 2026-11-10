@@ -45,7 +45,7 @@ export function AppShell() {
           semesterName={semester?.name ?? null}
           today={today}
           userInitial="F"
-          notifications={2}
+          notifications={0}
           onImport={openImport}
           onOpenMenu={() => setMenuOpen(true)}
         />

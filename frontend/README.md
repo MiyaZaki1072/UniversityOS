@@ -11,7 +11,7 @@ npm run build          # production bundle in dist/ (serve behind Django / nginx
 npm run build:preview  # one self-contained HTML file in dist-preview/ for design review
 ```
 
-Sample data is used until the backend exists. Set `VITE_USE_SAMPLE_DATA=false` in `.env` to call `GET /api/v1/dashboard/summary/`.
+Data is saved on the device (browser storage) by default, so the app runs with no server. Set `VITE_DATA_MODE=api` in `.env` to use the Django API instead, or `sample` for fixed sample data (`npm run build:preview` always uses sample data). Back up or move data between devices from Settings.
 
 ## Structure
 

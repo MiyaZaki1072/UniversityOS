@@ -1,12 +1,12 @@
 import { CalendarClock, FileInput, ListChecks, Plus, Timer } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useAppData } from '../lib/store'
 import { formatLongDate, formatMinutes, USER_TZ } from '../lib/format'
 import type { CourseRef } from '../lib/types'
 import { Button } from '../components/ui/Button'
 import { CountdownPanel } from '../components/ui/CountdownPanel'
-import { FormField } from '../components/ui/FormField'
-import { Modal } from '../components/ui/Overlay'
+import { TaskFormModal } from '../components/tasks/TaskForm'
 import { EmptyState, ErrorNotice, PageHeader, RecordCard, SkeletonRows, StatCard } from '../components/ui/Panels'
 import { DailyProtocol } from './dashboard/DailyProtocol'
 import { GradeStandingTable } from './dashboard/GradeStandingTable'
@@ -53,6 +53,8 @@ export function Dashboard() {
   const docket = [...data.today.classes, ...data.today.events, ...data.today.tasks]
   const [nextExam, ...laterExams] = data.upcoming_exams
   const dueToday = data.upcoming_deadlines.filter((d) => d.end_at.startsWith(data.date)).length
+  // Habit and study tracking aren't available yet in on-device mode; hide their panels until they are.
+  const hasTracking = data.habits.total > 0 || data.study.weekly_target_minutes > 0
   const counts = {
     classes: data.today.classes.length,
     events: data.today.events.length,
@@ -84,6 +86,28 @@ export function Dashboard() {
         }
       />
 
+      {data.courses.length === 0 && (
+        <RecordCard className="mb-4 lg:mb-5">
+          <EmptyState
+            code="NEW FILE"
+            title="Set up your semester"
+            body="Give any AI chat your timetable or syllabus with the prompt from Import with AI, then paste its reply. Or add courses by hand."
+            action={
+              <div className="flex flex-wrap justify-center gap-2">
+                <Button variant="primary" size="sm" icon={<FileInput size={14} />} onClick={openImport}>
+                  Import with AI
+                </Button>
+                <Link to="/courses">
+                  <Button variant="secondary" size="sm">
+                    Add courses by hand
+                  </Button>
+                </Link>
+              </div>
+            }
+          />
+        </RecordCard>
+      )}
+
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 lg:gap-5">
         {/* Row 1 — countdown + vitals */}
         <div className="lg:col-span-7">
@@ -100,7 +124,9 @@ export function Dashboard() {
           )}
         </div>
 
-        <div className="lg:col-span-5 grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-1 gap-4 lg:gap-5">
+        <div className={`lg:col-span-5 grid grid-cols-1 gap-4 lg:gap-5 ${hasTracking ? 'sm:grid-cols-3 lg:grid-cols-1' : ''}`}>
+          {hasTracking && (
+            <>
           <StatCard
             label="Study today"
             icon={<Timer size={16} />}
@@ -123,6 +149,8 @@ export function Dashboard() {
             tone="sage"
             detail={`${data.habits.total - data.habits.completed} habits left today`}
           />
+            </>
+          )}
           <StatCard
             label="Deadlines · 7 days"
             icon={<CalendarClock size={16} />}
@@ -155,44 +183,24 @@ export function Dashboard() {
         </div>
 
         {/* Row 3 — grades + habits */}
-        <div className="lg:col-span-7">
+        <div className={hasTracking ? 'lg:col-span-7' : 'lg:col-span-12'}>
           <GradeStandingTable standings={data.grade_standing} courses={courses} />
         </div>
-        <div className="lg:col-span-5">
-          <DailyProtocol habits={data.habits.items} />
-        </div>
+        {hasTracking && (
+          <>
+            <div className="lg:col-span-5">
+              <DailyProtocol habits={data.habits.items} />
+            </div>
 
-        {/* Row 4 — weekly study */}
-        <div className="lg:col-span-12">
-          <WeeklyActivity byDay={data.study.week_by_day} weekTarget={data.study.weekly_target_minutes} todayIndex={todayIndex} />
-        </div>
+            {/* Row 4 — weekly study */}
+            <div className="lg:col-span-12">
+              <WeeklyActivity byDay={data.study.week_by_day} weekTarget={data.study.weekly_target_minutes} todayIndex={todayIndex} />
+            </div>
+          </>
+        )}
       </div>
 
-      <Modal
-        open={taskFormOpen}
-        onClose={() => setTaskFormOpen(false)}
-        label="FORM T-1"
-        title="New task"
-        footer={
-          <>
-            <Button variant="ghost" onClick={() => setTaskFormOpen(false)}>
-              Cancel
-            </Button>
-            <Button variant="primary" onClick={() => setTaskFormOpen(false)}>
-              File task
-            </Button>
-          </>
-        }
-      >
-        <form className="grid gap-4" onSubmit={(e) => e.preventDefault()}>
-          <FormField label="Title" placeholder="e.g. Problem Set 5" autoFocus />
-          <div className="grid grid-cols-2 gap-4">
-            <FormField label="Course code" placeholder="MATH101" mono />
-            <FormField label="Due" type="datetime-local" mono />
-          </div>
-          <FormField label="Estimated minutes" type="number" min={0} placeholder="90" mono hint="Optional. Used for weekly workload estimates." />
-        </form>
-      </Modal>
+      <TaskFormModal open={taskFormOpen} onClose={() => setTaskFormOpen(false)} />
     </>
   )
 }
