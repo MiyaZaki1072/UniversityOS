@@ -1,4 +1,5 @@
 import { Bell, FileInput, Menu } from 'lucide-react'
+import type { ReactNode } from 'react'
 import { formatLongDate } from '../../lib/format'
 import { Emblem } from './Emblem'
 
@@ -11,6 +12,8 @@ interface AppHeaderProps {
   notifications: number
   onImport: () => void
   onOpenMenu: () => void
+  /** Small status shown before the actions (e.g. save state). */
+  status?: ReactNode
 }
 
 export function AppHeader({
@@ -22,6 +25,7 @@ export function AppHeader({
   notifications,
   onImport,
   onOpenMenu,
+  status,
 }: AppHeaderProps) {
   const longDate = formatLongDate(today)
 
@@ -62,6 +66,7 @@ export function AppHeader({
             </time>
           </div>
 
+          {status}
           <button
             onClick={onImport}
             className="h-9 px-2.5 inline-flex items-center gap-2 rounded-xs text-ink-muted hover:text-ink hover:bg-surface-2"
