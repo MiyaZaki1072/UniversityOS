@@ -1,8 +1,13 @@
 /**
- * Minimal API client for the Django backend (same-origin, session auth + CSRF).
- * Set VITE_USE_SAMPLE_DATA=false once the backend serves /api/v1/.
+ * Where the app's data lives (VITE_DATA_MODE):
+ * - "local"  (default) — this device's browser storage, no server needed
+ * - "api"    — the Django backend at /api/v1/ (session auth + CSRF)
+ * - "sample" — fixed sample data (design preview build)
  */
-export const USE_SAMPLE = import.meta.env.VITE_USE_SAMPLE_DATA !== 'false'
+export type DataMode = 'local' | 'api' | 'sample'
+
+const envMode = import.meta.env.VITE_DATA_MODE as DataMode | undefined
+export const DATA_MODE: DataMode = import.meta.env.MODE === 'preview' ? 'sample' : (envMode ?? 'local')
 
 function csrfToken(): string | undefined {
   return document.cookie.match(/(?:^|; )csrftoken=([^;]+)/)?.[1]

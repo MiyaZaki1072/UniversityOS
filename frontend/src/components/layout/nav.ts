@@ -67,5 +67,9 @@ export const allNavItems: NavItem[] = [...navGroups.flatMap((g) => g.items), set
 export const mobilePrimary = ['/', '/calendar', '/courses', '/tasks']
 
 export function findNavItem(pathname: string): NavItem {
-  return allNavItems.find((i) => i.path === pathname) ?? allNavItems[0]
+  return (
+    allNavItems.find((i) => i.path === pathname) ??
+    allNavItems.find((i) => i.path !== '/' && pathname.startsWith(`${i.path}/`)) ??
+    allNavItems[0]
+  )
 }
