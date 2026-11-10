@@ -1,13 +1,16 @@
-import { Download, Trash2, Upload } from 'lucide-react'
+import { Download, LogOut, RefreshCw, Trash2, Upload } from 'lucide-react'
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react'
 import { Button } from '../components/ui/Button'
 import { FormField } from '../components/ui/FormField'
 import { PageHeader, RecordCard, SectionHeader } from '../components/ui/Panels'
+import { DATA_MODE } from '../lib/api'
 import { emptyDb, isLocalDb, todayKey } from '../lib/localDb'
 import { useAppData } from '../lib/store'
 
 export function SettingsPage() {
-  const { db, mutate, replaceDb, saveFailed } = useAppData()
+  const { db, mutate, replaceDb, saveFailed, me, sync, syncNow, logout } = useAppData()
+  const server = DATA_MODE === 'server'
+  const syncText = { saved: 'All changes saved to your server.', saving: 'Saving…', offline: "Can't reach the server. Changes are kept on this device and saved when it's back.", error: 'The server refused the last save. Download a backup to be safe.' }[sync]
   const [sem, setSem] = useState({ name: '', start: '', end: '' })
   const [semMsg, setSemMsg] = useState<{ ok: boolean; text: string } | null>(null)
   const [backupMsg, setBackupMsg] = useState<{ ok: boolean; text: string } | null>(null)
@@ -72,6 +75,26 @@ export function SettingsPage() {
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 lg:gap-5">
+        {server && (
+          <RecordCard className="lg:col-span-2">
+            <SectionHeader index="00" title="Account & saving" />
+            <div className="p-4 sm:p-5 flex flex-wrap items-center gap-4">
+              <div className="flex-1 min-w-[220px]">
+                <div className="text-ink">
+                  Signed in as <span className="font-medium">{me?.display_name}</span>{' '}
+                  <span className="tabular text-[12px] text-ink-muted">({me?.username})</span>
+                </div>
+                <p className={`text-[13px] mt-1 ${sync === 'saved' ? 'text-sage-ink' : sync === 'saving' ? 'text-ink-muted' : 'text-danger'}`}>{syncText}</p>
+              </div>
+              <Button variant="secondary" icon={<RefreshCw size={16} />} onClick={syncNow}>
+                Sync now
+              </Button>
+              <Button variant="secondary" icon={<LogOut size={16} />} onClick={() => void logout()}>
+                Sign out
+              </Button>
+            </div>
+          </RecordCard>
+        )}
         <RecordCard>
           <SectionHeader index="01" title="Current semester" />
           <form onSubmit={saveSemester} className="p-4 sm:p-5 grid gap-4">
@@ -93,8 +116,9 @@ export function SettingsPage() {
           <SectionHeader index="02" title="Backup & devices" />
           <div className="p-4 sm:p-5 flex flex-col gap-4">
             <p className="text-[13.5px] text-ink-muted leading-relaxed">
-              Your data is saved in this browser only. To move it to your phone (or keep a copy), download a backup here and
-              restore it on the other device. Restoring replaces what is on that device.
+              {server
+                ? 'Everything is saved on your server and shows up on every device you sign in on. A backup file is an extra copy you keep yourself; restoring one replaces your planner everywhere.'
+                : 'Your data is saved in this browser only. To move it to your phone (or keep a copy), download a backup here and restore it on the other device. Restoring replaces what is on that device.'}
             </p>
             <div className="flex flex-wrap gap-2">
               <Button variant="primary" icon={<Download size={16} />} onClick={exportBackup}>
@@ -115,7 +139,7 @@ export function SettingsPage() {
         <RecordCard className="lg:col-span-2">
           <SectionHeader index="03" title="Danger zone" />
           <div className="p-4 sm:p-5 flex flex-wrap items-center gap-4">
-            <p className="text-[13.5px] text-ink-muted flex-1 min-w-[220px]">Erase every course, grade and task stored on this device.</p>
+            <p className="text-[13.5px] text-ink-muted flex-1 min-w-[220px]">{server ? 'Erase every course, grade and task in your planner (on the server and every device).' : 'Erase every course, grade and task stored on this device.'}</p>
             <Button variant="secondary" icon={<Trash2 size={16} />} onClick={reset} className="!text-danger !border-danger">
               Erase all data
             </Button>

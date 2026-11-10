@@ -10,8 +10,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+# Collect admin/API static files at build time (served by whitenoise).
+RUN DJANGO_SECRET_KEY=build-only DATABASE_URL=sqlite:////tmp/build.sqlite3 \
+    python manage.py collectstatic --noinput --settings=config.settings.development
+
 RUN adduser --disabled-password --gecos "" uos \
-    && mkdir -p /app/staticfiles \
     && chown -R uos:uos /app
 
 USER uos

@@ -1,5 +1,7 @@
 import { useState } from 'react'
-import { Outlet, useLocation } from 'react-router-dom'
+import { Cloud, CloudOff, LoaderCircle, X } from 'lucide-react'
+import { Link, Outlet, useLocation } from 'react-router-dom'
+import { DATA_MODE } from '../../lib/api'
 import { useAppData } from '../../lib/store'
 import { ImportDialog } from '../import/ImportDialog'
 import { Drawer } from '../ui/Overlay'
@@ -16,7 +18,7 @@ import { findNavItem } from './nav'
  */
 export function AppShell() {
   const { pathname } = useLocation()
-  const { data, openImport } = useAppData()
+  const { data, openImport, me, sync, notice, dismissNotice, syncNow } = useAppData()
   const [menuOpen, setMenuOpen] = useState(false)
   const page = findNavItem(pathname)
 
@@ -44,13 +46,22 @@ export function AppShell() {
           pageCode={page.code}
           semesterName={semester?.name ?? null}
           today={today}
-          userInitial="F"
+          userInitial={(me?.display_name ?? 'U').charAt(0).toUpperCase()}
+          status={DATA_MODE === 'server' ? <SyncChip state={sync} onRetry={syncNow} /> : undefined}
           notifications={0}
           onImport={openImport}
           onOpenMenu={() => setMenuOpen(true)}
         />
         <main id="main" key={pathname} className="flex-1 animate-page-in px-4 sm:px-6 lg:px-8 pt-6 sm:pt-8 pb-28 lg:pb-12">
           <div className="max-w-[1240px] mx-auto">
+            {notice && (
+              <div role="status" className="mb-4 flex items-start gap-3 p-3 border-[1.5px] border-mustard bg-mustard-wash rounded-xs text-[13.5px] text-ink">
+                <p className="flex-1">{notice}</p>
+                <button onClick={dismissNotice} className="p-0.5 text-ink-muted hover:text-ink" aria-label="Dismiss">
+                  <X size={16} />
+                </button>
+              </div>
+            )}
             <Outlet />
           </div>
         </main>
@@ -59,5 +70,33 @@ export function AppShell() {
       <MobileNav onMore={() => setMenuOpen(true)} />
       <ImportDialog />
     </div>
+  )
+}
+
+/** Save state for server mode: saved / saving / offline. */
+function SyncChip({ state, onRetry }: { state: 'saved' | 'saving' | 'offline' | 'error'; onRetry: () => void }) {
+  const look = {
+    saved: { icon: <Cloud size={15} />, label: 'Saved', cls: 'text-ink-muted' },
+    saving: { icon: <LoaderCircle size={15} className="animate-spin" />, label: 'Saving…', cls: 'text-ink-muted' },
+    offline: { icon: <CloudOff size={15} />, label: 'Offline', cls: 'text-mustard-ink' },
+    error: { icon: <CloudOff size={15} />, label: 'Not saved', cls: 'text-danger' },
+  }[state]
+  const content = (
+    <>
+      {look.icon}
+      <span className="hidden sm:inline micro !text-current">{look.label}</span>
+    </>
+  )
+  const cls = `h-9 px-2 inline-flex items-center gap-1.5 rounded-xs ${look.cls}`
+  if (state === 'offline' || state === 'error')
+    return (
+      <button onClick={onRetry} className={`${cls} hover:bg-surface-2`} title={`${look.label} — changes stay on this device. Tap to retry.`} aria-label={`${look.label}. Retry saving`}>
+        {content}
+      </button>
+    )
+  return (
+    <Link to="/settings" className={cls} title={look.label} aria-label={look.label}>
+      {content}
+    </Link>
   )
 }

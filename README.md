@@ -6,7 +6,7 @@ A personal university planner: semesters, courses, timetable, gradebook, calenda
 
 ## Status
 
-Frontend design system, Dashboard (sample data), backend skeleton, and Docker Compose setup are ready.
+Usable today: courses, weekly timetable, exams, tasks, gradebook and Import with AI. Runs either fully in the browser or on your own server (login + saved planner + daily backups).
 
 ## Start here
 
@@ -17,27 +17,22 @@ Frontend design system, Dashboard (sample data), backend skeleton, and Docker Co
 | Import courses with AI | [`docs/AI_IMPORT_GUIDE.md`](docs/AI_IMPORT_GUIDE.md) |
 | Work on the frontend | [`frontend/README.md`](frontend/README.md) |
 
-## Run with Docker
+## Run on a home server (ZimaOS / any Docker host)
 
-1. Copy the example environment file and set a secret key:
+Step-by-step guide: [`docs/DEPLOY_ZIMAOS.md`](docs/DEPLOY_ZIMAOS.md). Short version:
 
 ```bash
-cp .env.example .env
+cp .env.example .env              # then fill in POSTGRES_PASSWORD and DJANGO_SECRET_KEY
+docker compose up -d --build
+docker compose exec backend python manage.py createsuperuser
 ```
 
-2. Build and start PostgreSQL, the Django backend, and the Nginx frontend server:
+Open `http://<server-ip>:8080` and sign in. The planner is saved on the server and synced across devices; a database backup is written to `backups/` every day.
+
+For development with live reload of the backend:
 
 ```bash
-docker compose up --build
-```
-
-- Frontend: `http://localhost:8080`
-- Health check: `http://localhost:8080/api/health/`
-
-For production (without development overrides or host database ports):
-
-```bash
-docker compose -f docker-compose.yml up -d --build
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 ```
 
 ## Run locally for development

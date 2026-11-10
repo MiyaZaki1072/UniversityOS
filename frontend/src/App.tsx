@@ -1,11 +1,12 @@
 import { BrowserRouter, HashRouter, Route, Routes } from 'react-router-dom'
 import { AppShell } from './components/layout/AppShell'
 import { DATA_MODE } from './lib/api'
-import { AppDataProvider } from './lib/store'
+import { AppDataProvider, useAppData } from './lib/store'
 import { allNavItems } from './components/layout/nav'
 import { CourseDetailPage, CoursesPage } from './pages/Courses'
 import { Dashboard } from './pages/Dashboard'
 import { GradebookCoursePage, GradebookPage } from './pages/Gradebook'
+import { LoginPage } from './pages/Login'
 import { PlaceholderPage } from './pages/PlaceholderPage'
 import { SettingsPage } from './pages/Settings'
 import { TasksPage } from './pages/Tasks'
@@ -19,6 +20,16 @@ const built = ['/', '/calendar', '/courses', '/gradebook', '/tasks', '/settings'
 export default function App() {
   return (
     <AppDataProvider>
+      <Gate />
+    </AppDataProvider>
+  )
+}
+
+/** Server mode needs a signed-in user before the app opens. */
+function Gate() {
+  const { auth } = useAppData()
+  if (auth !== 'ready') return <LoginPage />
+  return (
       <Router>
         <Routes>
           <Route element={<AppShell />}>
@@ -39,6 +50,5 @@ export default function App() {
           </Route>
         </Routes>
       </Router>
-    </AppDataProvider>
   )
 }

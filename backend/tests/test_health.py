@@ -91,9 +91,7 @@ def test_production_settings_requires_env_vars() -> None:
 def test_docker_compose_and_env_example_configuration() -> None:
     repo_root = settings.BASE_DIR.parent
     compose_prod = yaml.safe_load((repo_root / "docker-compose.yml").read_text(encoding="utf-8"))
-    compose_dev = yaml.safe_load(
-        (repo_root / "docker-compose.override.yml").read_text(encoding="utf-8")
-    )
+    compose_dev = yaml.safe_load((repo_root / "docker-compose.dev.yml").read_text(encoding="utf-8"))
 
     services = compose_prod["services"]
     assert {"db", "backend", "web"} <= set(services.keys())
