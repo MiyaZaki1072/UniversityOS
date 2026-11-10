@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import environ
@@ -5,7 +6,7 @@ import environ
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 env = environ.Env()
-env_file = BASE_DIR.parent / ".env"
+env_file = Path(os.environ.get("DJANGO_ENV_FILE", BASE_DIR.parent / ".env"))
 if env_file.is_file():
     environ.Env.read_env(str(env_file))
 
@@ -70,7 +71,7 @@ ASGI_APPLICATION = "config.asgi.application"
 DATABASES = {
     "default": env.db(
         "DATABASE_URL",
-        default=f"sqlite:///{BASE_DIR / 'db.sqlite3'}",
+        default="postgres://uos:uos@localhost:5432/uos",
     )
 }
 
