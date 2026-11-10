@@ -4,6 +4,7 @@ import sys
 
 from django.apps import apps
 from django.conf import settings
+from django.core.management.utils import get_random_secret_key
 from rest_framework.test import APIClient
 
 
@@ -40,7 +41,8 @@ def test_installed_apps_and_timezone_configuration() -> None:
 def test_production_settings_deploy_check() -> None:
     env = {
         **os.environ,
-        "DJANGO_SECRET_KEY": "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0u1v2w3x4y5z6",
+        "DJANGO_SECRET_KEY": get_random_secret_key(),
+        "DATABASE_URL": "postgres://uos:uos@localhost:5432/uos",
     }
     result = subprocess.run(
         [
@@ -58,3 +60,22 @@ def test_production_settings_deploy_check() -> None:
         check=False,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_production_settings_requires_env_vars() -> None:
+    env = {k: v for k, v in os.environ.items() if k not in {"DJANGO_SECRET_KEY", "DATABASE_URL"}}
+    result = subprocess.run(
+        [
+            sys.executable,
+            "manage.py",
+            "check",
+            "--settings=config.settings.production",
+        ],
+        cwd=settings.BASE_DIR,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "ImproperlyConfigured" in result.stderr
