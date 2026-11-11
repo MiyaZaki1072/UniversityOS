@@ -4,7 +4,7 @@ import { Button } from '../components/ui/Button'
 import { FormField } from '../components/ui/FormField'
 import { PageHeader, RecordCard, SectionHeader } from '../components/ui/Panels'
 import { DATA_MODE } from '../lib/api'
-import { emptyDb, isLocalDb, todayKey } from '../lib/localDb'
+import { emptyDb, isLocalDb, normalizeDb, todayKey } from '../lib/localDb'
 import { useAppData } from '../lib/store'
 
 export function SettingsPage() {
@@ -49,7 +49,7 @@ export function SettingsPage() {
       const parsed: unknown = JSON.parse(await file.text())
       if (!isLocalDb(parsed)) throw new Error('This is not a University OS backup file.')
       if (!window.confirm(`Replace everything on this device with the backup (${parsed.courses.length} courses, ${parsed.tasks.length} tasks)?`)) return
-      replaceDb(parsed)
+      replaceDb(normalizeDb(parsed))
       setBackupMsg({ ok: true, text: 'Backup restored.' })
     } catch (err) {
       setBackupMsg({ ok: false, text: (err as Error).message })

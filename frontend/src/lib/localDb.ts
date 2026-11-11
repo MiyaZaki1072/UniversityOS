@@ -88,15 +88,100 @@ export interface LSemester {
   end_date: string
 }
 
+export interface LHabit {
+  id: number
+  name: string
+  /** DAILY = every day. WEEKLY = `target_per_week` times a week. */
+  frequency: 'DAILY' | 'WEEKLY'
+  target_per_week: number
+  target_minutes: number | null
+  archived: boolean
+  created_on: string // YYYY-MM-DD
+}
+
+/** One completed day of a habit. At most one per habit per date. */
+export interface LHabitLog {
+  habit_id: number
+  date: string // YYYY-MM-DD
+}
+
+export interface LStudySession {
+  id: number
+  course_id: number | null
+  started_at: string // ISO
+  /** null while the timer is running. At most one running session. */
+  ended_at: string | null
+  note: string
+}
+
+/** A saved link, global (course_id null) or for one course. */
+export interface LLink {
+  id: number
+  title: string
+  url: string
+  description: string
+  course_id: number | null
+  category: string
+  favorite: boolean
+}
+
+export interface LSettings {
+  weekly_study_target_minutes: number
+}
+
 export interface LocalDB {
   version: 1
   semester: LSemester | null
   courses: LCourse[]
   tasks: LTask[]
+  habits: LHabit[]
+  habitLogs: LHabitLog[]
+  studySessions: LStudySession[]
+  links: LLink[]
+  settings: LSettings
   nextId: number
 }
 
-export const emptyDb = (): LocalDB => ({ version: 1, semester: null, courses: [], tasks: [], nextId: 1 })
+export const emptyDb = (): LocalDB => ({
+  version: 1,
+  semester: null,
+  courses: [],
+  tasks: [],
+  habits: [],
+  habitLogs: [],
+  studySessions: [],
+  links: [],
+  settings: { weekly_study_target_minutes: 1200 },
+  nextId: 1,
+})
+
+/**
+ * Bring an older saved planner up to the current shape: fill in collections added later
+ * and move per-course imported links into the shared `links` list.
+ */
+export function normalizeDb(raw: LocalDB): LocalDB {
+  const base = emptyDb()
+  const db: LocalDB = {
+    ...base,
+    ...raw,
+    habits: raw.habits ?? [],
+    habitLogs: raw.habitLogs ?? [],
+    studySessions: raw.studySessions ?? [],
+    links: [...(raw.links ?? [])],
+    settings: { ...base.settings, ...(raw.settings ?? {}) },
+  }
+  if (db.courses.some((c) => c.resources?.length)) {
+    db.courses = db.courses.map((c) => {
+      for (const r of c.resources ?? []) {
+        db.links.push({ id: r.id, title: r.title, url: r.url, description: r.description, course_id: c.id, category: '', favorite: false })
+      }
+      return { ...c, resources: [] }
+    })
+  }
+  // Links are rendered as <a href>; only web addresses are allowed (a restored file could hold anything).
+  db.links = db.links.filter((l) => typeof l.url === 'string' && /^https?:\/\//i.test(l.url))
+  return db
+}
 
 /** Default scale (spec §5.4): 80 → A, 79.99 → B+. Highest band first. */
 export const DEFAULT_SCALE: PlanBand[] = [
@@ -125,7 +210,7 @@ export function loadDb(): LocalDB {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (!raw) return emptyDb()
     const parsed: unknown = JSON.parse(raw)
-    return isLocalDb(parsed) ? parsed : emptyDb()
+    return isLocalDb(parsed) ? normalizeDb(parsed) : emptyDb()
   } catch {
     return emptyDb()
   }
@@ -297,6 +382,88 @@ export function taskOccurrence(t: LTask): Occurrence {
 }
 
 /* ------------------------------------------------------------------ */
+/* Habits                                                              */
+/* ------------------------------------------------------------------ */
+
+export const habitDoneOn = (db: LocalDB, habitId: number, dateKey: string) =>
+  db.habitLogs.some((l) => l.habit_id === habitId && l.date === dateKey)
+
+/** How many times a habit was done in the Monday-Sunday week containing dateKey. */
+export function habitWeekCount(db: LocalDB, habitId: number, dateKey: string): number {
+  const from = weekStart(dateKey)
+  const to = addDays(from, 6)
+  return db.habitLogs.filter((l) => l.habit_id === habitId && l.date >= from && l.date <= to).length
+}
+
+/**
+ * Current streak in days. Daily habits: consecutive done days ending today (or yesterday if
+ * today is not done yet). Weekly habits: consecutive weeks that met the target, times 7.
+ */
+export function habitStreak(db: LocalDB, habit: LHabit, today: string): number {
+  if (habit.frequency === 'WEEKLY') {
+    const target = Math.max(1, habit.target_per_week)
+    let week = weekStart(today)
+    if (habitWeekCount(db, habit.id, week) < target) week = addDays(week, -7)
+    let weeks = 0
+    while (weeks < 520 && habitWeekCount(db, habit.id, week) >= target) {
+      weeks++
+      week = addDays(week, -7)
+    }
+    return weeks * 7
+  }
+  const done = new Set(db.habitLogs.filter((l) => l.habit_id === habit.id).map((l) => l.date))
+  let day = done.has(today) ? today : addDays(today, -1)
+  let n = 0
+  while (done.has(day)) {
+    n++
+    day = addDays(day, -1)
+  }
+  return n
+}
+
+export function habitsToday(db: LocalDB, today: string): DashboardSummary['habits'] {
+  const items = db.habits
+    .filter((h) => !h.archived)
+    .map((h) => ({
+      id: h.id,
+      name: h.name,
+      target_minutes: h.target_minutes,
+      completed: habitDoneOn(db, h.id, today),
+      streak_days: habitStreak(db, h, today),
+    }))
+  return { completed: items.filter((i) => i.completed).length, total: items.length, items }
+}
+
+/* ------------------------------------------------------------------ */
+/* Study sessions                                                      */
+/* ------------------------------------------------------------------ */
+
+/** Whole minutes of a session; a running session counts up to `now`. */
+export function sessionMinutes(s: LStudySession, now: Date = new Date()): number {
+  const end = s.ended_at ? Date.parse(s.ended_at) : now.getTime()
+  return Math.max(0, Math.floor((end - Date.parse(s.started_at)) / 60_000))
+}
+
+/** Minutes studied on a date (a session belongs to the day it started, in the user's timezone). */
+export function studyMinutesOn(db: LocalDB, dateKey: string, now: Date = new Date()): number {
+  return db.studySessions.filter((s) => todayKey(new Date(s.started_at)) === dateKey).reduce((t, s) => t + sessionMinutes(s, now), 0)
+}
+
+export const activeSession = (db: LocalDB) => db.studySessions.find((s) => s.ended_at === null) ?? null
+
+export function studySummary(db: LocalDB, now: Date = new Date()): DashboardSummary['study'] {
+  const today = todayKey(now)
+  const monday = weekStart(today)
+  const week_by_day = Array.from({ length: 7 }, (_, i) => studyMinutesOn(db, addDays(monday, i), now))
+  return {
+    today_minutes: studyMinutesOn(db, today, now),
+    week_minutes: week_by_day.reduce((a, b) => a + b, 0),
+    week_by_day,
+    weekly_target_minutes: db.settings.weekly_study_target_minutes,
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /* Dashboard summary                                                   */
 /* ------------------------------------------------------------------ */
 
@@ -359,8 +526,8 @@ export function buildSummary(db: LocalDB, now: Date = new Date()): DashboardSumm
     },
     upcoming_exams: exams,
     upcoming_deadlines: deadlines,
-    habits: { completed: 0, total: 0, items: [] },
-    study: { today_minutes: 0, week_minutes: 0, week_by_day: [0, 0, 0, 0, 0, 0, 0], weekly_target_minutes: 0 },
+    habits: habitsToday(db, today),
+    study: studySummary(db, now),
     grade_standing: db.courses.map(standingFor),
   }
 }
@@ -414,5 +581,16 @@ export function applyPlan(db: LocalDB, plan: ImportPlan, makeActive: boolean): {
   const keptIds = new Set(keep.map((c) => c.id))
   const tasks = db.tasks.map((t) => (t.course_id !== null && !keptIds.has(t.course_id) ? { ...t, course_id: null } : t))
 
-  return { next: { ...db, semester, courses: [...keep, ...added], tasks, nextId: id }, added: added.length, skipped }
+  // Links and study sessions of removed courses stay, just without a course.
+  const unlink = <T extends { course_id: number | null }>(x: T): T => (x.course_id !== null && !keptIds.has(x.course_id) ? { ...x, course_id: null } : x)
+  const next = normalizeDb({
+    ...db,
+    semester,
+    courses: [...keep, ...added],
+    tasks,
+    links: db.links.map(unlink),
+    studySessions: db.studySessions.map(unlink),
+    nextId: id,
+  })
+  return { next, added: added.length, skipped }
 }

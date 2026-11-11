@@ -1,6 +1,7 @@
 import { CalendarClock, FileInput, ListChecks, Plus, Timer } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { DATA_MODE } from '../lib/api'
 import { useAppData } from '../lib/store'
 import { formatLongDate, formatMinutes, USER_TZ } from '../lib/format'
 import type { CourseRef } from '../lib/types'
@@ -28,8 +29,14 @@ function localDateKey(d: Date) {
 }
 
 export function Dashboard() {
-  const { data, error, loading, reload, openImport } = useAppData()
+  const { data, error, loading, reload, openImport, mutate } = useAppData()
   const now = useMinuteClock()
+  const toggleHabit = (id: number, done: boolean) =>
+    mutate((d) => {
+      const date = localDateKey(new Date())
+      d.habitLogs = d.habitLogs.filter((l) => !(l.habit_id === id && l.date === date))
+      if (done) d.habitLogs.push({ habit_id: id, date })
+    })
   const [taskFormOpen, setTaskFormOpen] = useState(false)
 
   const courses = useMemo(
@@ -131,7 +138,7 @@ export function Dashboard() {
             label="Study today"
             icon={<Timer size={16} />}
             value={formatMinutes(data.study.today_minutes)}
-            progress={data.study.week_minutes / data.study.weekly_target_minutes}
+            progress={data.study.weekly_target_minutes > 0 ? data.study.week_minutes / data.study.weekly_target_minutes : 0}
             tone="mustard"
             detail={
               <>
@@ -145,9 +152,9 @@ export function Dashboard() {
             icon={<ListChecks size={16} />}
             value={data.habits.completed}
             unit={`/ ${data.habits.total}`}
-            progress={data.habits.completed / data.habits.total}
+            progress={data.habits.total > 0 ? data.habits.completed / data.habits.total : 0}
             tone="sage"
-            detail={`${data.habits.total - data.habits.completed} habits left today`}
+            detail={data.habits.total > 0 ? `${data.habits.total - data.habits.completed} habits left today` : 'No habits yet'}
           />
             </>
           )}
@@ -189,7 +196,7 @@ export function Dashboard() {
         {hasTracking && (
           <>
             <div className="lg:col-span-5">
-              <DailyProtocol habits={data.habits.items} />
+              <DailyProtocol habits={data.habits.items} onToggle={DATA_MODE === 'local' || DATA_MODE === 'server' ? toggleHabit : undefined} />
             </div>
 
             {/* Row 4 — weekly study */}
