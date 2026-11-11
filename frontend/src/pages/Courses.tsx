@@ -12,6 +12,9 @@ import { COURSE_COLORS } from '../lib/importConfig'
 import {
   addDays,
   DEFAULT_SCALE,
+  isSU,
+  suPassMark,
+  suScale,
   fromLocalInput,
   meetingActiveOn,
   standingFor,
@@ -51,7 +54,7 @@ function nextClass(c: LCourse, semester: Parameters<typeof meetingActiveOn>[2]):
 function CourseFormModal({ open, onClose, course }: { open: boolean; onClose: () => void; course?: LCourse | null }) {
   const { db, mutate } = useAppData()
   const navigate = useNavigate()
-  const [f, setF] = useState({ code: '', name: '', credits: '3', instructor: '', color: COURSE_COLORS[0] })
+  const [f, setF] = useState({ code: '', name: '', credits: '3', instructor: '', color: COURSE_COLORS[0], grading: 'LETTER' as 'LETTER' | 'SU', pass: '50' })
   const [errors, setErrors] = useState<Record<string, string>>({})
 
   useEffect(() => {
@@ -59,8 +62,16 @@ function CourseFormModal({ open, onClose, course }: { open: boolean; onClose: ()
     setErrors({})
     setF(
       course
-        ? { code: course.code, name: course.name, credits: course.credits, instructor: course.instructor, color: course.color }
-        : { code: '', name: '', credits: '3', instructor: '', color: COURSE_COLORS[db.courses.length % COURSE_COLORS.length] },
+        ? {
+            code: course.code,
+            name: course.name,
+            credits: course.credits,
+            instructor: course.instructor,
+            color: course.color,
+            grading: isSU(course) ? 'SU' : 'LETTER',
+            pass: isSU(course) ? suPassMark(course) : '50',
+          }
+        : { code: '', name: '', credits: '3', instructor: '', color: COURSE_COLORS[db.courses.length % COURSE_COLORS.length], grading: 'LETTER', pass: '50' },
     )
   }, [open, course, db.courses.length])
 
@@ -73,18 +84,30 @@ function CourseFormModal({ open, onClose, course }: { open: boolean; onClose: ()
     if (!f.name.trim()) errs.name = 'Required.'
     if (!/^#[0-9A-Fa-f]{6}$/.test(f.color)) errs.color = 'Use a color like #D8693A.'
     if (Number.isNaN(Number(f.credits)) || Number(f.credits) < 0) errs.credits = 'Must be 0 or more.'
+    if (f.grading === 'SU' && (f.pass === '' || Number.isNaN(Number(f.pass)) || Number(f.pass) < 0 || Number(f.pass) > 100)) errs.pass = '0 to 100.'
     setErrors(errs)
     if (Object.keys(errs).length) return
 
     let newId: number | null = null
     mutate((d, nid) => {
-      const values = { code, name: f.name.trim(), credits: f.credits || '0', instructor: f.instructor.trim(), color: f.color }
+      const values = { code, name: f.name.trim(), credits: f.credits || '0', instructor: f.instructor.trim(), color: f.color, grading: f.grading }
+      const scaleFor = (prev: LCourse | undefined) =>
+        f.grading === 'SU'
+          ? suScale(f.pass)
+          : prev && !isSU(prev)
+            ? prev.scale
+            : DEFAULT_SCALE.map((b) => ({ ...b }))
       if (course) {
         const c = d.courses.find((x) => x.id === course.id)
-        if (c) Object.assign(c, values)
+        if (c) {
+          const scale = scaleFor(c)
+          Object.assign(c, values, { scale })
+          // A letter grade entered before switching modes no longer fits the scale.
+          if (c.official_grade && !scale.some((b) => b.grade_label === c.official_grade)) c.official_grade = null
+        }
       } else {
         newId = nid()
-        d.courses.push({ id: newId, ...values, meetings: [], categories: [], scale: DEFAULT_SCALE, exams: [], resources: [] })
+        d.courses.push({ id: newId, ...values, meetings: [], categories: [], scale: scaleFor(undefined), exams: [], resources: [] })
       }
     })
     onClose()
@@ -115,6 +138,21 @@ function CourseFormModal({ open, onClose, course }: { open: boolean; onClose: ()
         </div>
         <FormField label="Name" placeholder="Calculus I" value={f.name} error={errors.name} onChange={(e) => setF({ ...f, name: e.target.value })} />
         <FormField label="Instructor" placeholder="Optional" value={f.instructor} onChange={(e) => setF({ ...f, instructor: e.target.value })} />
+        <div className="grid grid-cols-2 gap-4">
+          <SelectField
+            label="Grading"
+            value={f.grading}
+            onChange={(e) => setF({ ...f, grading: e.target.value as 'LETTER' | 'SU' })}
+            options={[
+              { value: 'LETTER', label: 'Letter grade (A–F)' },
+              { value: 'SU', label: 'S/U (pass/fail)' },
+            ]}
+          />
+          {f.grading === 'SU' && (
+            <FormField label="Pass mark (%)" mono type="number" min={0} max={100} step="0.5" value={f.pass} error={errors.pass} hint="S at or above this" onChange={(e) => setF({ ...f, pass: e.target.value })} />
+          )}
+        </div>
+        {f.grading === 'SU' && <p className="-mt-2 text-[12.5px] text-ink-muted">S/U courses show S or U and are not counted in your GPA.</p>}
         <div className="flex flex-col gap-1.5">
           <span className="micro !text-ink">Color</span>
           <div className="flex flex-wrap gap-2">
@@ -328,7 +366,9 @@ export function CoursesPage() {
                       <div className="font-display text-lg font-medium text-ink leading-tight">{c.name}</div>
                       {c.instructor && <div className="text-[13px] text-ink-muted mt-0.5">{c.instructor}</div>}
                     </div>
-                    <span className="tabular text-[12px] text-ink-muted shrink-0">{Number(c.credits)} cr</span>
+                    <span className="tabular text-[12px] text-ink-muted shrink-0">
+                      {Number(c.credits)} cr{isSU(c) && ' · S/U'}
+                    </span>
                   </div>
                   <div className="mt-auto flex flex-wrap items-center gap-x-4 gap-y-1 tabular text-[12px] text-ink-muted">
                     <span className="inline-flex items-center gap-1.5">
@@ -424,7 +464,7 @@ export function CourseDetailPage() {
         title={course.name}
         subtitle={
           <span className="tabular text-[13px]">
-            {Number(course.credits)} credits{course.instructor && ` · ${course.instructor}`}
+            {Number(course.credits)} credits{isSU(course) && ' · S/U, not in GPA'}{course.instructor && ` · ${course.instructor}`}
           </span>
         }
         aside={

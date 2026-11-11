@@ -59,7 +59,19 @@ export interface PlanResource {
   description: string
 }
 
+/** Pass/fail courses: S (satisfactory) from the pass mark, U below it. No grade points, not in GPA. */
+export function suScale(passMark: string | number = 50): PlanBand[] {
+  return [
+    { grade_label: 'S', minimum_percentage: String(passMark), grade_point: '' },
+    { grade_label: 'U', minimum_percentage: '0', grade_point: '' },
+  ]
+}
+
+const SU_WORDS = new Set(['S/U', 'SU', 'PASS/FAIL', 'PASSFAIL', 'P/F', 'PF', 'SATISFACTORY/UNSATISFACTORY'])
+
 export interface PlanCourse {
+  /** LETTER = normal letter grades; SU = satisfactory/unsatisfactory (pass/fail). */
+  grading: 'LETTER' | 'SU'
   code: string
   name: string
   credits: string
@@ -276,6 +288,11 @@ export function parseImport(text: string, existingCodes: string[] = []): ParseRe
     const code = c.text(rc, 'code', p, { required: true, max: 30 }).toUpperCase()
     const name = c.text(rc, 'name', p, { required: true, max: 150 })
     const label = code || name || p
+    const su = SU_WORDS.has(str(rc.grading).toUpperCase().replace(/[\s_-]/g, ''))
+    if (rc.grading !== undefined && rc.grading !== null && str(rc.grading) && !su && str(rc.grading).toUpperCase() !== 'LETTER') {
+      c.warn(`${label}.grading`, `"${str(rc.grading)}" isn't "letter" or "S/U"; letter grades were used.`)
+    }
+    const passMark = su ? c.decimal(rc.su_pass_percentage, `${label}.su_pass_percentage`, { min: 0, max: 100 }) ?? '50' : '50'
 
     if (code && seen.has(code)) return c.err(`${p}.code`, `${code} appears twice in this file.`)
     seen.add(code)
@@ -390,7 +407,10 @@ export function parseImport(text: string, existingCodes: string[] = []): ParseRe
 
     if (meetings.length === 0) c.warn(label, 'No class times; this course won\'t appear on the timetable.')
 
+    if (su) scale = suScale(passMark)
+
     courses.push({
+      grading: su ? 'SU' : 'LETTER',
       code,
       name,
       credits: c.decimal(rc.credits, `${label}.credits`, { min: 0 }) ?? '0',
