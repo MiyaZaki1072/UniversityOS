@@ -1,11 +1,14 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Cloud, CloudOff, LoaderCircle, X } from 'lucide-react'
 import { Link, Outlet, useLocation } from 'react-router-dom'
 import { DATA_MODE } from '../../lib/api'
 import { useAppData } from '../../lib/store'
 import { ImportDialog } from '../import/ImportDialog'
 import { Drawer } from '../ui/Overlay'
+import { useReminders } from '../../lib/reminders'
+import { CommandPalette, useCommandPaletteHotkey } from '../search/CommandPalette'
 import { AppHeader } from './AppHeader'
+import { ReminderPanel } from './ReminderPanel'
 import { AppSidebar, SidebarContent } from './AppSidebar'
 import { MobileNav } from './MobileNav'
 import { findNavItem } from './nav'
@@ -18,8 +21,18 @@ import { findNavItem } from './nav'
  */
 export function AppShell() {
   const { pathname } = useLocation()
-  const { data, openImport, me, sync, notice, dismissNotice, syncNow } = useAppData()
+  const { data, db, openImport, me, sync, notice, dismissNotice, syncNow } = useAppData()
   const [menuOpen, setMenuOpen] = useState(false)
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [bellOpen, setBellOpen] = useState(false)
+  const usesPlanner = DATA_MODE === 'local' || DATA_MODE === 'server'
+  const reminders = useReminders(db)
+  const courseMap = useMemo(() => new Map(db.courses.map((c) => [c.id, { code: c.code, color: c.color }])), [db.courses])
+  useCommandPaletteHotkey(() => setSearchOpen(true))
+  const toggleBell = () => {
+    setBellOpen((o) => !o)
+    reminders.markAllSeen()
+  }
   const page = findNavItem(pathname)
 
   const semester = data?.active_semester ?? null
@@ -48,7 +61,10 @@ export function AppShell() {
           today={today}
           userInitial={(me?.display_name ?? 'U').charAt(0).toUpperCase()}
           status={DATA_MODE === 'server' ? <SyncChip state={sync} onRetry={syncNow} /> : undefined}
-          notifications={0}
+          notifications={usesPlanner ? reminders.unseen : 0}
+          onSearch={usesPlanner ? () => setSearchOpen(true) : undefined}
+          onBell={usesPlanner ? toggleBell : undefined}
+          bellPanel={bellOpen ? <ReminderPanel reminders={reminders.due} courses={courseMap} onClose={() => setBellOpen(false)} /> : undefined}
           onImport={openImport}
           onOpenMenu={() => setMenuOpen(true)}
         />
@@ -69,6 +85,7 @@ export function AppShell() {
 
       <MobileNav onMore={() => setMenuOpen(true)} />
       <ImportDialog />
+      {usesPlanner && <CommandPalette open={searchOpen} onClose={() => setSearchOpen(false)} />}
     </div>
   )
 }

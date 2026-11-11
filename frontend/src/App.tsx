@@ -10,6 +10,7 @@ import { HabitsPage } from './pages/Habits'
 import { LoginPage } from './pages/Login'
 import { PlaceholderPage } from './pages/PlaceholderPage'
 import { ResourcesPage } from './pages/Resources'
+import { SemestersPage } from './pages/Semesters'
 import { SettingsPage } from './pages/Settings'
 import { StudyPage } from './pages/Study'
 import { TasksPage } from './pages/Tasks'
@@ -40,6 +41,7 @@ function Gate() {
           <Route path="courses/:id" element={<CourseDetailPage />} />
           <Route path="gradebook" element={<GradebookPage />} />
           <Route path="gradebook/:id" element={<GradebookCoursePage />} />
+          <Route path="semesters" element={<SemestersPage />} />
           <Route path="tasks" element={<TasksPage />} />
           <Route path="habits" element={<HabitsPage />} />
           <Route path="study" element={<StudyPage />} />

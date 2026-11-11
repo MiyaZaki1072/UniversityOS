@@ -19,3 +19,20 @@ class PlannerState(models.Model):
 
     def __str__(self) -> str:
         return f"Planner of {self.user} (v{self.version})"
+
+
+class CalendarFeed(models.Model):
+    """A secret link that calendar apps (Google, Apple, Outlook) subscribe to.
+
+    Anyone with the token can read the user's schedule, so it is long and random and can be
+    rotated or turned off at any time.
+    """
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="calendar_feed"
+    )
+    token = models.CharField(max_length=64, unique=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self) -> str:
+        return f"Calendar feed of {self.user}"

@@ -1,5 +1,5 @@
-import { Pencil, Play, Plus, Square, Trash2 } from 'lucide-react'
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { ChevronDown, Pause, Pencil, Play, Plus, SkipForward, Square, Trash2 } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { Button } from '../components/ui/Button'
 import { FormField } from '../components/ui/FormField'
 import { Modal } from '../components/ui/Overlay'
@@ -27,6 +27,144 @@ const pad = (n: number) => String(n).padStart(2, '0')
 function clock(ms: number): string {
   const total = Math.max(0, Math.floor(ms / 1000))
   return `${pad(Math.floor(total / 3600))}:${pad(Math.floor((total % 3600) / 60))}:${pad(total % 60)}`
+}
+
+/* ------------------------------------------------------------------ */
+/* Pomodoro helpers                                                    */
+/* ------------------------------------------------------------------ */
+
+type PomoPhase = 'focus' | 'short' | 'long'
+
+interface PomoState {
+  mode: 'timer' | 'pomodoro'
+  phase: PomoPhase
+  /** 1-based focus round. */
+  round: number
+  /** Epoch ms when the running phase ends; null when idle or paused. */
+  endsAt: number | null
+  /** Remaining ms while paused; null otherwise. */
+  pausedMs: number | null
+}
+
+const POMO_KEY = 'university-os:pomodoro'
+const POMO_IDLE: PomoState = { mode: 'timer', phase: 'focus', round: 1, endsAt: null, pausedMs: null }
+const POMO_LABEL: Record<PomoPhase, string> = { focus: 'Focus', short: 'Short break', long: 'Long break' }
+
+function loadPomo(): PomoState {
+  try {
+    const raw = window.localStorage.getItem(POMO_KEY)
+    if (!raw) return POMO_IDLE
+    const p = JSON.parse(raw) as Partial<PomoState>
+    const phaseOk = p.phase === 'focus' || p.phase === 'short' || p.phase === 'long'
+    if (!phaseOk || (p.mode !== 'timer' && p.mode !== 'pomodoro')) return POMO_IDLE
+    return {
+      mode: p.mode,
+      phase: p.phase as PomoPhase,
+      round: typeof p.round === 'number' && p.round >= 1 ? Math.floor(p.round) : 1,
+      endsAt: typeof p.endsAt === 'number' ? p.endsAt : null,
+      pausedMs: typeof p.pausedMs === 'number' && p.endsAt == null ? p.pausedMs : null,
+    }
+  } catch {
+    return POMO_IDLE
+  }
+}
+
+function savePomo(p: PomoState) {
+  try {
+    window.localStorage.setItem(POMO_KEY, JSON.stringify(p))
+  } catch {
+    /* storage unavailable */
+  }
+}
+
+function nextPhase(p: PomoState, every: number): PomoState {
+  const idle = { endsAt: null, pausedMs: null }
+  if (p.phase === 'focus') return { ...p, ...idle, phase: p.round % every === 0 ? 'long' : 'short' }
+  if (p.phase === 'short') return { ...p, ...idle, phase: 'focus', round: p.round + 1 }
+  return { ...p, ...idle, phase: 'focus', round: 1 }
+}
+
+function beep() {
+  try {
+    const Ctx = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+    if (!Ctx) return
+    const ctx = new Ctx()
+    const osc = ctx.createOscillator()
+    const gain = ctx.createGain()
+    osc.frequency.value = 880
+    gain.gain.value = 0.15
+    osc.connect(gain)
+    gain.connect(ctx.destination)
+    osc.start()
+    osc.stop(ctx.currentTime + 0.2)
+    osc.onended = () => void ctx.close()
+  } catch {
+    /* audio unavailable */
+  }
+}
+
+function notify(text: string) {
+  try {
+    if (typeof Notification !== 'undefined' && Notification.permission === 'granted') new Notification(text)
+  } catch {
+    /* notifications unavailable */
+  }
+}
+
+const POMO_FIELDS = [
+  { key: 'focus_minutes', label: 'Focus (min)', min: 5, max: 90 },
+  { key: 'short_break_minutes', label: 'Short break (min)', min: 1, max: 30 },
+  { key: 'long_break_minutes', label: 'Long break (min)', min: 5, max: 60 },
+  { key: 'long_break_every', label: 'Long break every', min: 2, max: 8 },
+] as const
+
+function PomodoroSettings() {
+  const { db, mutate } = useAppData()
+  const cfg = db.settings.pomodoro
+  const [open, setOpen] = useState(false)
+  const [text, setText] = useState<Record<string, string>>({})
+
+  const change = (key: (typeof POMO_FIELDS)[number]['key'], min: number, max: number, value: string) => {
+    setText((t) => ({ ...t, [key]: value }))
+    const n = Number(value)
+    if (value.trim() === '' || !Number.isInteger(n) || n < min || n > max) return
+    mutate((d) => {
+      d.settings.pomodoro[key] = n
+    })
+  }
+
+  return (
+    <div className="border-t border-rule">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="w-full flex items-center justify-between gap-3 px-4 sm:px-6 py-3 text-[13px] text-ink-muted hover:text-ink"
+      >
+        <span className="micro">Pomodoro settings</span>
+        <ChevronDown size={16} className={open ? 'rotate-180' : ''} aria-hidden="true" />
+      </button>
+      {open && (
+        <div className="px-4 sm:px-6 pb-4 grid grid-cols-2 sm:grid-cols-4 gap-4">
+          {POMO_FIELDS.map((f) => (
+            <FormField
+              key={f.key}
+              label={f.label}
+              type="number"
+              inputMode="numeric"
+              mono
+              min={f.min}
+              max={f.max}
+              step={1}
+              value={text[f.key] ?? String(cfg[f.key])}
+              onChange={(e) => change(f.key, f.min, f.max, e.target.value)}
+              onBlur={() => setText((t) => ({ ...t, [f.key]: String(cfg[f.key]) }))}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  )
 }
 
 /* ------------------------------------------------------------------ */
@@ -198,6 +336,109 @@ export function StudyPage() {
     })
   }
 
+  /* ---- Pomodoro ---- */
+  const cfg = db.settings.pomodoro
+  const [pomo, setPomo] = useState<PomoState>(loadPomo)
+  const pomoRef = useRef(pomo)
+  const [pomoNow, setPomoNow] = useState(() => Date.now())
+  const [pomoMsg, setPomoMsg] = useState<string | null>(null)
+
+  const updatePomo = (p: PomoState) => {
+    pomoRef.current = p
+    setPomo(p)
+    savePomo(p)
+  }
+
+  const phaseMs = (phase: PomoPhase) =>
+    (phase === 'focus' ? cfg.focus_minutes : phase === 'short' ? cfg.short_break_minutes : cfg.long_break_minutes) * 60_000
+
+  const endFocusSession = (endedAt: number) => {
+    mutate((d) => {
+      const s = activeSession(d)
+      if (s) s.ended_at = new Date(endedAt).toISOString()
+    })
+  }
+
+  const setMode = (mode: PomoState['mode']) => {
+    setPomoMsg(null)
+    updatePomo({ ...pomoRef.current, mode })
+  }
+
+  const pomoStart = () => {
+    const p = pomoRef.current
+    if (p.endsAt !== null) return
+    if (p.phase === 'focus') {
+      if (activeSession(db)) {
+        setPomoMsg('A study session is already running. Stop it first.')
+        return
+      }
+      mutate((d, nid) => {
+        if (activeSession(d)) return
+        d.studySessions.push({
+          id: nid(),
+          course_id: courseSel ? Number(courseSel) : null,
+          started_at: new Date().toISOString(),
+          ended_at: null,
+          note: noteSel.trim(),
+          ends_by: new Date(Date.now() + (p.pausedMs ?? phaseMs(p.phase))).toISOString(),
+        })
+      })
+    }
+    setPomoMsg(null)
+    updatePomo({ ...p, endsAt: Date.now() + (p.pausedMs ?? phaseMs(p.phase)), pausedMs: null })
+    setPomoNow(Date.now())
+  }
+
+  const pomoPause = () => {
+    const p = pomoRef.current
+    if (p.endsAt === null) return
+    if (p.phase === 'focus') endFocusSession(Date.now())
+    updatePomo({ ...p, endsAt: null, pausedMs: Math.max(0, p.endsAt - Date.now()) })
+  }
+
+  const pomoFinish = (natural: boolean) => {
+    const p = pomoRef.current
+    if (natural && p.endsAt === null) return
+    if (p.phase === 'focus' && p.endsAt !== null) endFocusSession(natural ? Math.min(Date.now(), p.endsAt) : Date.now())
+    if (natural) {
+      beep()
+      notify(p.phase === 'focus' ? 'Focus done — take a break' : 'Break over — back to focus')
+    }
+    setPomoMsg(null)
+    updatePomo(nextPhase(p, cfg.long_break_every))
+  }
+
+  const pomoStop = () => {
+    const p = pomoRef.current
+    if (p.phase === 'focus' && p.endsAt !== null) endFocusSession(Date.now())
+    setPomoMsg(null)
+    updatePomo({ ...p, phase: 'focus', round: 1, endsAt: null, pausedMs: null })
+  }
+
+  const finishRef = useRef(pomoFinish)
+  useEffect(() => {
+    finishRef.current = pomoFinish
+  })
+
+  const pomoEndsAt = pomo.endsAt
+  useEffect(() => {
+    if (pomoEndsAt === null) return
+    const t = window.setInterval(() => {
+      const now = Date.now()
+      setPomoNow(now)
+      if (now >= pomoEndsAt) finishRef.current(true)
+    }, 250)
+    return () => window.clearInterval(t)
+  }, [pomoEndsAt])
+
+  const pomoActive = pomo.endsAt !== null
+  const pomoPaused = pomo.pausedMs !== null
+  const pomoTotal = phaseMs(pomo.phase)
+  const pomoRemaining = pomo.endsAt !== null ? Math.max(0, pomo.endsAt - pomoNow) : (pomo.pausedMs ?? pomoTotal)
+  const pomoSeconds = Math.ceil(pomoRemaining / 1000)
+  const pomoClock = `${pad(Math.floor(pomoSeconds / 60))}:${pad(pomoSeconds % 60)}`
+  const pomoProgress = pomoTotal > 0 ? Math.min(1, Math.max(0, 1 - pomoRemaining / pomoTotal)) : 0
+
   const remove = (s: LStudySession) => {
     if (!window.confirm('Delete this study session?')) return
     mutate((d) => {
@@ -238,8 +479,93 @@ export function StudyPage() {
 
       <div className="flex flex-col gap-4 lg:gap-5">
         <RecordCard indicator={runningCourse?.color}>
-          <SectionHeader index="01" title="Session Timer" meta={running ? 'Recording' : 'Idle'} />
-          {running ? (
+          <SectionHeader
+            index="01"
+            title="Session Timer"
+            meta={pomo.mode === 'pomodoro' ? (pomoActive ? POMO_LABEL[pomo.phase] : pomoPaused ? 'Paused' : 'Idle') : running ? 'Recording' : 'Idle'}
+          />
+          <div className="px-4 sm:px-6 pt-4 flex gap-2" role="group" aria-label="Timer mode">
+            {(['timer', 'pomodoro'] as const).map((m) => {
+              const on = pomo.mode === m
+              return (
+                <button
+                  key={m}
+                  type="button"
+                  aria-pressed={on}
+                  disabled={!on && (running !== null || pomoActive)}
+                  onClick={() => setMode(m)}
+                  className={`micro px-3 py-1.5 border disabled:opacity-40 ${on ? 'border-accent-strong text-accent-strong' : 'border-rule text-ink-muted hover:text-ink'}`}
+                >
+                  {m === 'timer' ? 'Timer' : 'Pomodoro'}
+                </button>
+              )
+            })}
+          </div>
+          {pomo.mode === 'pomodoro' ? (
+            <>
+              <div className="p-4 sm:p-6 grid gap-5">
+                <div>
+                  <div className="micro mb-2 flex items-center gap-2">
+                    {pomoActive && <span className="w-2 h-2 rounded-full bg-accent-fill motion-safe:animate-pulse" aria-hidden="true" />}
+                    <span>{POMO_LABEL[pomo.phase]}</span>
+                    <span className="tabular text-ink-muted">· Round {pomo.round} of {cfg.long_break_every}</span>
+                  </div>
+                  <div className="tabular text-[56px] sm:text-[72px] leading-none font-medium text-ink" aria-live="off">
+                    {pomoClock}
+                  </div>
+                  <div
+                    className="mt-3 h-1 w-full bg-surface-sunken"
+                    role="progressbar"
+                    aria-label="Phase progress"
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={Math.round(pomoProgress * 100)}
+                  >
+                    <div className="h-full bg-accent-fill" style={{ width: `${pomoProgress * 100}%` }} />
+                  </div>
+                  {pomoMsg && (
+                    <p className="mt-3 text-[13px] text-danger" role="alert">
+                      {pomoMsg}
+                    </p>
+                  )}
+                </div>
+                {pomo.phase === 'focus' && !pomoActive && !pomoPaused && (
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <SelectField
+                      label="Course"
+                      value={courseSel}
+                      onChange={(e) => setCourseSel(e.target.value)}
+                      options={[{ value: '', label: 'No course' }, ...db.courses.map((c) => ({ value: String(c.id), label: `${c.code} · ${c.name}` }))]}
+                    />
+                    <FormField
+                      label="Note"
+                      placeholder="Optional, e.g. Chapter 4 review"
+                      value={noteSel}
+                      onChange={(e) => setNoteSel(e.target.value)}
+                    />
+                  </div>
+                )}
+                <div className="flex flex-wrap gap-2">
+                  {pomoActive ? (
+                    <Button variant="primary" className="h-12 px-6 flex-1 sm:flex-none" icon={<Pause size={18} />} onClick={pomoPause}>
+                      Pause
+                    </Button>
+                  ) : (
+                    <Button variant="primary" className="h-12 px-6 flex-1 sm:flex-none" icon={<Play size={18} />} onClick={pomoStart}>
+                      {pomoPaused ? 'Resume' : 'Start'}
+                    </Button>
+                  )}
+                  <Button variant="secondary" className="h-12 px-6 flex-1 sm:flex-none" icon={<SkipForward size={18} />} onClick={() => pomoFinish(false)}>
+                    Skip
+                  </Button>
+                  <Button variant="secondary" className="h-12 px-6 flex-1 sm:flex-none" icon={<Square size={18} />} onClick={pomoStop}>
+                    Stop
+                  </Button>
+                </div>
+              </div>
+              <PomodoroSettings />
+            </>
+          ) : running ? (
             <div className="p-4 sm:p-6 flex flex-col sm:flex-row sm:items-center gap-5 sm:gap-8">
               <div className="min-w-0 flex-1">
                 <div className="micro mb-2">Now studying</div>

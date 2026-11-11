@@ -3,6 +3,8 @@ import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'r
 import { Button } from '../components/ui/Button'
 import { FormField } from '../components/ui/FormField'
 import { PageHeader, RecordCard, SectionHeader } from '../components/ui/Panels'
+import { CalendarFeedCard } from '../components/settings/CalendarFeedCard'
+import { ReminderSettingsCard } from '../components/settings/ReminderSettingsCard'
 import { DATA_MODE } from '../lib/api'
 import { emptyDb, isLocalDb, normalizeDb, todayKey } from '../lib/localDb'
 import { useAppData } from '../lib/store'
@@ -135,6 +137,9 @@ export function SettingsPage() {
             </p>
           </div>
         </RecordCard>
+
+        <ReminderSettingsCard />
+        {server && <CalendarFeedCard />}
 
         <RecordCard className="lg:col-span-2">
           <SectionHeader index="03" title="Danger zone" />
