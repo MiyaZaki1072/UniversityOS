@@ -385,14 +385,15 @@ export function CourseDetailPage() {
   }
 
   const tasks = db.tasks.filter((t) => t.course_id === course.id && t.status !== 'COMPLETED')
+  const links = db.links.filter((l) => l.course_id === course.id)
 
   const removeCourse = () => {
     if (!window.confirm(`Delete ${course.code} with its classes, exams and grades? Its tasks are kept without a course.`)) return
     mutate((d) => {
       d.courses = d.courses.filter((c) => c.id !== course.id)
-      d.tasks.forEach((t) => {
-        if (t.course_id === course.id) t.course_id = null
-      })
+      for (const x of [...d.tasks, ...d.links, ...d.studySessions]) {
+        if (x.course_id === course.id) x.course_id = null
+      }
     })
     navigate('/courses')
   }
@@ -571,11 +572,11 @@ export function CourseDetailPage() {
             )}
           </RecordCard>
 
-          {course.resources.length > 0 && (
+          {links.length > 0 && (
             <RecordCard>
               <SectionHeader index="04" title="Links" />
               <ul className="divide-y divide-rule">
-                {course.resources.map((r) => (
+                {links.map((r) => (
                   <li key={r.id} className="px-4 sm:px-5 py-2.5">
                     <a href={r.url} target="_blank" rel="noopener noreferrer" className="font-medium text-accent-strong hover:underline break-all">
                       {r.title}

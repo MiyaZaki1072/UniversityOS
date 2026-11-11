@@ -1,30 +1,35 @@
 import { Check } from 'lucide-react'
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import type { HabitToday } from '../../lib/types'
 import { RecordCard, SectionHeader } from '../../components/ui/Panels'
 import { StatusStamp } from '../../components/ui/StatusStamp'
 
-/**
- * Today's habits as a punch card.
- * TODO(api): toggling should POST/DELETE /habits/{id}/logs/ for today's date.
- */
-export function DailyProtocol({ habits }: { habits: HabitToday[] }) {
-  const [done, setDone] = useState(() => new Set(habits.filter((h) => h.completed).map((h) => h.id)))
+interface DailyProtocolProps {
+  habits: HabitToday[]
+  /** Called when a habit is punched or un-punched. Without it the card keeps its own state (sample data). */
+  onToggle?: (id: number, done: boolean) => void
+}
+
+/** Today's habits as a punch card. */
+export function DailyProtocol({ habits, onToggle }: DailyProtocolProps) {
+  const [local, setLocal] = useState(() => new Set(habits.filter((h) => h.completed).map((h) => h.id)))
   const [justPunched, setJustPunched] = useState<number | null>(null)
+  const done = onToggle ? new Set(habits.filter((h) => h.completed).map((h) => h.id)) : local
 
   const toggle = (id: number) => {
-    setDone((prev) => {
+    const nowDone = !done.has(id)
+    if (nowDone) setJustPunched(id)
+    if (onToggle) return onToggle(id, nowDone)
+    setLocal((prev) => {
       const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else {
-        next.add(id)
-        setJustPunched(id)
-      }
+      if (nowDone) next.add(id)
+      else next.delete(id)
       return next
     })
   }
 
-  const complete = done.size === habits.length
+  const complete = habits.length > 0 && done.size === habits.length
 
   return (
     <RecordCard className="h-full flex flex-col">
@@ -38,7 +43,16 @@ export function DailyProtocol({ habits }: { habits: HabitToday[] }) {
           </span>
         }
       />
-      <ul className="flex-1 divide-y divide-dashed divide-rule">
+      {habits.length === 0 && (
+        <p className="flex-1 px-4 sm:px-5 py-6 text-[13.5px] text-ink-muted">
+          No habits yet.{' '}
+          <Link to="/habits" className="text-accent-strong underline underline-offset-2">
+            Add your first habit
+          </Link>
+          .
+        </p>
+      )}
+      <ul className={`divide-y divide-dashed divide-rule ${habits.length ? 'flex-1' : ''}`}>
         {habits.map((h, i) => {
           const checked = done.has(h.id)
           return (

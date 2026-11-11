@@ -13,10 +13,12 @@ A personal planner for university: your courses, weekly timetable, exams, tasks 
 | **Courses** | Courses with weekly class times, rooms, exams and links |
 | **Gradebook** | Weighted categories, scores typed straight into the table, custom grade scale, current and projected letter grade |
 | **Tasks** | Overdue / in progress / pending / completed, with priorities and due dates |
+| **Habits** | Daily or times-per-week habits, punch card for today, week grid, streaks and 12-week consistency |
+| **Study timer** | Start/stop sessions per course, add past sessions, daily and weekly totals against a weekly target |
+| **Resource hub** | Saved links per course or global, categories, favorites, search |
+| **Semester report** | Study time by course and by week, habit consistency, task completion, grade standing |
 | **Import with AI** | Turn a syllabus or timetable into courses, checked before anything is saved |
 | **Saving** | Self-hosted: login, saved on your server, synced across devices, daily database backup. Or browser-only with backup files |
-
-Habits, study timer, resource hub and semester analytics are planned.
 
 ## Ways to run it
 

@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { sampleDashboard } from '../data/sampleDashboard'
 import { ApiError, apiFetch, DATA_MODE } from './api'
 import type { ImportPlan } from './importConfig'
-import { applyPlan, buildSummary, emptyDb, isLocalDb, loadDb, saveDb, STORAGE_KEY, type LocalDB } from './localDb'
+import { applyPlan, buildSummary, emptyDb, isLocalDb, loadDb, normalizeDb, saveDb, STORAGE_KEY, type LocalDB } from './localDb'
 import type { DashboardSummary } from './types'
 
 export interface ImportOptions {
@@ -141,7 +141,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
 
   const adoptRemote = useCallback(
     (remote: RemoteState) => {
-      show(isLocalDb(remote.data) ? remote.data : emptyDb())
+      show(isLocalDb(remote.data) ? normalizeDb(remote.data) : emptyDb())
       setMeta({ ...metaRef.current, base: remote.version, pending: false })
       setSync('saved')
     },
