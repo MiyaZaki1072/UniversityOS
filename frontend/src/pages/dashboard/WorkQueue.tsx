@@ -1,4 +1,4 @@
-import { ArrowRight, Check } from 'lucide-react'
+import { ArrowRight, Check, GraduationCap } from 'lucide-react'
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import type { CourseRef, Occurrence } from '../../lib/types'
@@ -17,7 +17,7 @@ function stampFor(o: Occurrence, now: Date): StampStatus {
 const priorityLevel = { LOW: 1, MEDIUM: 2, HIGH: 3 } as const
 
 function PriorityMark({ priority }: { priority?: Occurrence['priority'] }) {
-  if (!priority) return <span className="w-[22px]" aria-hidden="true" />
+  if (!priority) return null
   const level = priorityLevel[priority]
   return (
     <span className="flex gap-[2px] w-[22px]" role="img" aria-label={`${priority.toLowerCase()} priority`}>
@@ -80,11 +80,16 @@ export function WorkQueue({ items, courses, now, index, onCompleteTask }: WorkQu
       <SectionHeader
         index={index}
         title="Work Queue"
-        meta={<span className="tabular">{items.length} open</span>}
         action={
-          <Link to="/tasks" className="inline-flex items-center gap-1 text-[13px] font-medium text-accent-strong hover:underline underline-offset-2">
-            All tasks <ArrowRight size={14} aria-hidden="true" />
-          </Link>
+          <>
+            <span className="tabular text-[12px] text-ink-muted">{items.length} open</span>
+            <Link
+              to="/tasks"
+              className="inline-flex items-center gap-1 py-2 text-[13px] font-medium text-accent-strong hover:underline underline-offset-2"
+            >
+              All <span className="lg:sr-only xl:not-sr-only">tasks</span> <ArrowRight size={14} aria-hidden="true" />
+            </Link>
+          </>
         }
       />
       {rows.length === 0 ? (
@@ -102,7 +107,7 @@ export function WorkQueue({ items, courses, now, index, onCompleteTask }: WorkQu
             return (
               <li key={o.id} className="flex items-start gap-3 px-4 sm:px-5 py-3">
                 {canComplete ? (
-                  <label className="pt-0.5 cursor-pointer" title={isDone ? 'Mark as not done' : 'Mark as done'}>
+                  <label className="-m-2 p-2 pt-2.5 cursor-pointer" title={isDone ? 'Mark as not done' : 'Mark as done'}>
                     <input
                       type="checkbox"
                       className="sr-only peer"
@@ -119,31 +124,35 @@ export function WorkQueue({ items, courses, now, index, onCompleteTask }: WorkQu
                       {isDone && <Check size={13} strokeWidth={3} className="animate-stamp" />}
                     </span>
                   </label>
+                ) : o.source_type === 'assessment_deadline' ? (
+                  <span className="w-5 shrink-0 grid place-items-center pt-1 text-ink-muted" title="Graded item">
+                    <GraduationCap size={15} aria-hidden="true" />
+                  </span>
                 ) : (
-                  <div className="pt-1">
+                  <div className="w-5 shrink-0 pt-1">
                     <PriorityMark priority={o.priority} />
                   </div>
                 )}
                 <div className="min-w-0 flex-1">
                   <div className={`leading-snug ${isDone ? 'text-ink-muted line-through decoration-ink-muted' : 'font-medium text-ink'}`}>
-                    <Link to={hrefFor(o)} className="hover:underline underline-offset-2 decoration-ink-muted">
+                    <Link to={hrefFor(o)} className="inline-block py-[3px] -my-[3px] hover:underline underline-offset-2 decoration-ink-muted">
                       {o.title}
                     </Link>
                   </div>
-                  <div className="mt-1 flex flex-wrap items-center gap-x-2 tabular text-[12px] text-ink-muted">
+                  {/* Spaced facts rather than "·"-joined text, so a wrap never starts a line with a separator. */}
+                  <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 tabular text-[12px] text-ink-muted">
                     {canComplete && o.priority && <PriorityMark priority={o.priority} />}
                     {course && (
-                      <span className="inline-flex items-center gap-1.5">
+                      <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
                         <span className="w-2 h-2 rounded-[1px]" style={{ background: course.color }} aria-hidden="true" />
                         {course.code}
                       </span>
                     )}
-                    {course && <span aria-hidden="true">·</span>}
-                    <span className={urgent && !isDone ? 'text-accent-strong font-medium' : ''}>{due}</span>
-                    <span className="hidden sm:inline">
-                      · {formatShortDate(o.end_at)} {formatTime(o.end_at)}
-                    </span>
-                    {o.source_type === 'assessment_deadline' && <span>· graded item</span>}
+                    <span className={`whitespace-nowrap ${urgent && !isDone ? 'text-accent-strong font-medium' : ''}`}>{due}</span>
+                    <time dateTime={o.end_at} className="hidden sm:inline whitespace-nowrap">
+                      {formatShortDate(o.end_at)} {formatTime(o.end_at)}
+                    </time>
+                    {o.source_type === 'assessment_deadline' && <span className="whitespace-nowrap">Graded</span>}
                   </div>
                 </div>
                 <StatusStamp status={isDone ? 'COMPLETED' : stampFor(o, now)} fresh={isDone} className="mt-0.5" />

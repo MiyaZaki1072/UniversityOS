@@ -66,7 +66,10 @@ function Row({ o, course, phase }: { o: Occurrence; course?: CourseRef; phase: P
         </div>
         <div className={`mt-0.5 leading-snug ${past ? 'text-ink-muted' : 'font-medium text-ink'}`}>
           {course ? (
-            <Link to={`/courses/${course.id}`} className="hover:underline underline-offset-2 decoration-ink-muted">
+            <Link
+              to={`/courses/${course.id}`}
+              className="inline-block py-[3px] -my-[3px] hover:underline underline-offset-2 decoration-ink-muted"
+            >
               {o.title}
             </Link>
           ) : (

@@ -278,7 +278,8 @@ export function Dashboard() {
             courses={courses}
             now={now}
             index={idx.queue}
-            onCompleteTask={canEdit ? completeTask : undefined}
+            // Sample data is fixed, so the preview build only shows the check-off locally (like the habit punch card).
+            onCompleteTask={canEdit ? completeTask : DATA_MODE === 'sample' ? () => {} : undefined}
           />
         </div>
 
