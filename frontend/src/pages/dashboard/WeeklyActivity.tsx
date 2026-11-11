@@ -8,12 +8,15 @@ interface WeeklyActivityProps {
   weekTarget: number
   /** 0 = Monday. */
   todayIndex: number
+  index?: string
 }
 
 /** Study minutes per day against the daily share of the weekly target. */
-export function WeeklyActivity({ byDay, weekTarget, todayIndex }: WeeklyActivityProps) {
+export function WeeklyActivity({ byDay, weekTarget, todayIndex, index }: WeeklyActivityProps) {
+  const hasTarget = weekTarget > 0
   const dailyTarget = weekTarget / 7
-  const max = Math.max(dailyTarget * 1.5, ...byDay)
+  // Floor of 1 keeps bar heights finite when there is no target and no study yet.
+  const max = Math.max(1, dailyTarget * 1.5, ...byDay)
   const total = byDay.reduce((a, b) => a + b, 0)
   const elapsed = todayIndex + 1
   const avg = Math.round(total / elapsed)
@@ -21,16 +24,18 @@ export function WeeklyActivity({ byDay, weekTarget, todayIndex }: WeeklyActivity
 
   return (
     <RecordCard>
-      <SectionHeader index="06" title="Weekly Activity Log" meta="Study minutes" />
+      <SectionHeader index={index} title="Weekly Activity Log" meta="Study minutes" />
       <div className="grid md:grid-cols-[1fr_220px]">
         <div className="px-4 sm:px-5 pt-5 pb-4">
           <div className="relative h-[150px]">
             {/* Target line */}
-            <div className="absolute inset-x-0 border-t border-dashed border-mustard" style={{ bottom: `${targetPct}%` }} aria-hidden="true">
-              <span className="absolute right-0 -top-5 tabular text-[10.5px] text-mustard-ink">
-                TARGET {formatMinutes(Math.round(dailyTarget))}
-              </span>
-            </div>
+            {hasTarget && (
+              <div className="absolute inset-x-0 border-t border-dashed border-mustard" style={{ bottom: `${targetPct}%` }} aria-hidden="true">
+                <span className="absolute right-0 -top-5 tabular text-[10.5px] text-mustard-ink">
+                  TARGET {formatMinutes(Math.round(dailyTarget))}
+                </span>
+              </div>
+            )}
             <ol className="absolute inset-0 grid grid-cols-7 gap-2 sm:gap-4 items-end">
               {byDay.map((m, i) => {
                 const future = i > todayIndex
@@ -70,13 +75,13 @@ export function WeeklyActivity({ byDay, weekTarget, todayIndex }: WeeklyActivity
           <div className="p-4">
             <dt className="micro">Week to date</dt>
             <dd className="tabular text-xl text-ink mt-1">{formatMinutes(total)}</dd>
+            {hasTarget && (
+              <dd className="tabular text-[12px] text-ink-muted mt-1">{Math.round((total / weekTarget) * 100)}% of target</dd>
+            )}
           </div>
           <div className="p-4">
             <dt className="micro">Weekly target</dt>
-            <dd className="tabular text-xl text-ink mt-1">
-              {formatMinutes(weekTarget)}
-              <span className="text-[12px] text-ink-muted ml-1.5">{Math.round((total / weekTarget) * 100)}%</span>
-            </dd>
+            <dd className="tabular text-xl text-ink mt-1">{hasTarget ? formatMinutes(weekTarget) : '—'}</dd>
           </div>
           <div className="p-4">
             <dt className="micro">Daily average</dt>

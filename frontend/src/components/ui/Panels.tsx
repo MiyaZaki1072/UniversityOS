@@ -19,11 +19,11 @@ export function SectionHeader({ index, title, meta, action }: SectionHeaderProps
           {index}
         </span>
       )}
-      <h2 className="font-display text-[15px] font-semibold uppercase tracking-[0.08em] text-ink">
+      <h2 className="font-display text-[15px] font-semibold uppercase tracking-[0.08em] text-ink whitespace-nowrap">
         {title}
       </h2>
-      {meta && <span className="micro hidden sm:inline">{meta}</span>}
-      <div className="ml-auto flex items-center gap-2">{action}</div>
+      {meta && <span className="micro hidden sm:inline min-w-0 truncate">{meta}</span>}
+      <div className="ml-auto flex items-center gap-2 whitespace-nowrap">{action}</div>
     </div>
   )
 }

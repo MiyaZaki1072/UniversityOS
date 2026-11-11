@@ -1,4 +1,3 @@
-import { useEffect, useState } from 'react'
 import type { CourseRef, Occurrence } from '../../lib/types'
 import { daysUntil, formatShortDate, formatTime } from '../../lib/format'
 
@@ -7,15 +6,17 @@ interface CountdownPanelProps {
   course?: CourseRef
   /** Further exams listed under the main countdown. */
   following?: { exam: Occurrence; course?: CourseRef }[]
+  /** The page clock, so every panel agrees on the time. */
+  now: Date
+  /** Section number shown in the header band. */
+  index?: string
 }
 
-function useNow(intervalMs = 30_000) {
-  const [now, setNow] = useState(() => new Date())
-  useEffect(() => {
-    const id = window.setInterval(() => setNow(new Date()), intervalMs)
-    return () => window.clearInterval(id)
-  }, [intervalMs])
-  return now
+/** T−N counts calendar days, so name the near ones instead of "0 DAYS" / "1 DAY". */
+function dayUnit(days: number) {
+  if (days <= 0) return 'TODAY'
+  if (days === 1) return 'TOMORROW'
+  return 'DAYS'
 }
 
 function remaining(targetIso: string, now: Date) {
@@ -73,8 +74,7 @@ function Readout({ value, label }: { value: number; label: string }) {
   )
 }
 
-export function CountdownPanel({ exam, course, following = [] }: CountdownPanelProps) {
-  const now = useNow()
+export function CountdownPanel({ exam, course, following = [], now, index }: CountdownPanelProps) {
   const days = daysUntil(exam.start_at, now)
   const left = remaining(exam.start_at, now)
 
@@ -87,7 +87,11 @@ export function CountdownPanel({ exam, course, following = [] }: CountdownPanelP
 
       {/* Header band */}
       <div className="relative flex items-center gap-3 px-5 sm:px-6 h-11 border-b border-walnut-rule">
-        <span className="inline-block w-2 h-2 rounded-full bg-accent" aria-hidden="true" />
+        {index ? (
+          <span className="tabular text-[11px] font-semibold text-accent-strong tracking-wider">{index}</span>
+        ) : (
+          <span className="inline-block w-2 h-2 rounded-full bg-accent" aria-hidden="true" />
+        )}
         <span className="font-mono text-[11px] font-medium tracking-[0.14em] uppercase text-on-walnut-muted">
           Upcoming examination
         </span>
@@ -105,13 +109,16 @@ export function CountdownPanel({ exam, course, following = [] }: CountdownPanelP
         </h2>
 
         <div className="mt-5 flex flex-wrap items-end gap-x-8 gap-y-5">
-          <div className="flex items-baseline gap-3" aria-label={`${days} days remaining`}>
+          <div
+            className="flex items-baseline gap-3"
+            aria-label={days <= 0 ? 'Today' : days === 1 ? 'Tomorrow' : `In ${days} calendar days`}
+          >
             <span className="tabular text-[28px] sm:text-[34px] leading-none text-accent font-medium">T−</span>
             <span className="tabular text-[84px] sm:text-[104px] leading-[0.85] font-medium text-mustard tracking-[-0.04em]">
               {days}
             </span>
             <span className="tabular text-[18px] sm:text-[20px] tracking-[0.12em] text-on-walnut">
-              {days === 1 ? 'DAY' : 'DAYS'}
+              {dayUnit(days)}
             </span>
           </div>
 

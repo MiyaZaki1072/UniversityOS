@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import type { CourseRef, GradeStanding } from '../../lib/types'
 import { formatPercent } from '../../lib/format'
 import { DataTable, type Column } from '../../components/ui/DataTable'
-import { RecordCard, SectionHeader } from '../../components/ui/Panels'
+import { EmptyState, RecordCard, SectionHeader } from '../../components/ui/Panels'
 import { StatusStamp } from '../../components/ui/StatusStamp'
 
 interface Row extends GradeStanding {
@@ -51,7 +51,7 @@ const columns: Column<Row>[] = [
     mono: true,
     cell: (r) =>
       r.current_grade === null ? (
-        <span className="text-ink-faint">—</span>
+        <span className="text-ink-muted" aria-label="No grade yet">—</span>
       ) : (
         <span className="text-[15px] text-ink">{formatPercent(r.current_grade)}%</span>
       ),
@@ -87,7 +87,15 @@ const columns: Column<Row>[] = [
 ]
 
 /** Compact ledger of every course's provisional standing (from /courses/{id}/grade-summary/). */
-export function GradeStandingTable({ standings, courses }: { standings: GradeStanding[]; courses: Map<number, CourseRef> }) {
+export function GradeStandingTable({
+  standings,
+  courses,
+  index,
+}: {
+  standings: GradeStanding[]
+  courses: Map<number, CourseRef>
+  index?: string
+}) {
   const rows: Row[] = standings.flatMap((s) => {
     const course = courses.get(s.course_id)
     return course ? [{ ...s, course }] : []
@@ -97,7 +105,7 @@ export function GradeStandingTable({ standings, courses }: { standings: GradeSta
   return (
     <RecordCard className="h-full">
       <SectionHeader
-        index="04"
+        index={index}
         title="Grade Standing"
         meta="Provisional"
         action={
@@ -106,22 +114,26 @@ export function GradeStandingTable({ standings, courses }: { standings: GradeSta
           </Link>
         }
       />
-      <DataTable
-        caption="Current grade standing by course"
-        columns={columns}
-        rows={rows}
-        rowKey={(r) => r.course_id}
-        footer={
-          first && (
-            <p className="text-[12.5px] text-ink-muted leading-relaxed">
-              <span className="micro !text-ink mr-2">Note</span>
-              Current grades cover graded weight only — {first.course.code} has{' '}
-              <span className="tabular text-ink">{(100 - Number(first.graded_category_weight)).toFixed(0)}%</span> of its
-              weight still ungraded. Letters stay projected until every assessment is in.
-            </p>
-          )
-        }
-      />
+      {rows.length === 0 ? (
+        <EmptyState code="LEDGER EMPTY" title="No courses on file" body="Add a course to start tracking its standing." />
+      ) : (
+        <DataTable
+          caption="Current grade standing by course"
+          columns={columns}
+          rows={rows}
+          rowKey={(r) => r.course_id}
+          footer={
+            first && (
+              <p className="text-[12.5px] text-ink-muted leading-relaxed">
+                <span className="micro !text-ink mr-2">Note</span>
+                Current grades cover graded weight only — {first.course.code} has{' '}
+                <span className="tabular text-ink">{(100 - Number(first.graded_category_weight)).toFixed(0)}%</span> of its
+                weight still ungraded. Letters stay projected until every assessment is in.
+              </p>
+            )
+          }
+        />
+      )}
     </RecordCard>
   )
 }
