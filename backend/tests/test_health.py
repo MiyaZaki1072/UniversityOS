@@ -40,8 +40,11 @@ def test_installed_apps_and_timezone_configuration() -> None:
 
 
 def test_production_settings_deploy_check() -> None:
+    # A local .env (loaded into this process by the settings) may relax the HTTPS settings;
+    # check the production defaults instead.
+    relaxed = ("SECURE_", "SESSION_COOKIE_", "CSRF_COOKIE_")
     env = {
-        **os.environ,
+        **{k: v for k, v in os.environ.items() if not k.startswith(relaxed)},
         "DJANGO_ENV_FILE": str(settings.BASE_DIR / ".nonexistent.env"),
         "DJANGO_SECRET_KEY": get_random_secret_key(),
         "DATABASE_URL": "postgres://uos:uos@localhost:5432/uos",
