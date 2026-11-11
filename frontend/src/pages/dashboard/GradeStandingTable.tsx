@@ -110,7 +110,7 @@ export function GradeStandingTable({
         meta="Provisional"
         action={
           <Link to="/gradebook" className="inline-flex items-center gap-1 py-2 text-[13px] font-medium text-accent-strong hover:underline underline-offset-2">
-            Ledger <ArrowRight size={14} aria-hidden="true" />
+            Gradebook <ArrowRight size={14} aria-hidden="true" />
           </Link>
         }
       />

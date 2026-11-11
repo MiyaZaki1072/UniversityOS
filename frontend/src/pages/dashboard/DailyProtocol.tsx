@@ -37,6 +37,7 @@ export function DailyProtocol({ habits, onToggle, index }: DailyProtocolProps) {
       <SectionHeader
         index={index}
         title="Daily Protocol"
+        meta="Habits"
         action={
           <span className="tabular text-[13px] text-ink">
             <span className="text-sage-ink font-semibold">{done.size}</span>
@@ -88,8 +89,8 @@ export function DailyProtocol({ habits, onToggle, index }: DailyProtocolProps) {
         })}
       </ul>
       <div className="flex items-center justify-between px-4 sm:px-5 h-11 border-t border-rule bg-surface-sunken">
-        <span className="micro">Streak in days</span>
-        {complete ? <StatusStamp status="FILED" fresh /> : <span className="micro">{habits.length - done.size} remaining</span>}
+        <span className="text-[12.5px] text-ink-muted">Streaks count days in a row</span>
+        {complete ? <StatusStamp status="FILED" fresh /> : <span className="tabular text-[12.5px] text-ink-muted">{habits.length - done.size} to go</span>}
       </div>
     </RecordCard>
   )

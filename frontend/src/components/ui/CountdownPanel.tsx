@@ -74,9 +74,25 @@ function Readout({ value, label }: { value: number; label: string }) {
   )
 }
 
+type Urgency = 'distant' | 'near' | 'imminent'
+
+/** Drama scales with the stakes: calm a fortnight out, full volume in the last days. */
+function urgencyOf(days: number): Urgency {
+  if (days <= 2) return 'imminent'
+  if (days <= 7) return 'near'
+  return 'distant'
+}
+
+const figureClass: Record<Urgency, string> = {
+  distant: 'text-[60px] sm:text-[72px] text-on-walnut',
+  near: 'text-[84px] sm:text-[104px] text-mustard',
+  imminent: 'text-[84px] sm:text-[104px] text-accent-strong',
+}
+
 export function CountdownPanel({ exam, course, following = [], now, index }: CountdownPanelProps) {
   const days = daysUntil(exam.start_at, now)
   const left = remaining(exam.start_at, now)
+  const urgency = urgencyOf(days)
 
   return (
     <section
@@ -92,8 +108,12 @@ export function CountdownPanel({ exam, course, following = [], now, index }: Cou
         ) : (
           <span className="inline-block w-2 h-2 rounded-full bg-accent" aria-hidden="true" />
         )}
-        <span className="font-mono text-[11px] font-medium tracking-[0.14em] uppercase text-on-walnut-muted">
-          Upcoming examination
+        <span
+          className={`font-mono text-[11px] font-medium tracking-[0.14em] uppercase ${
+            urgency === 'imminent' ? 'text-accent-strong' : 'text-on-walnut-muted'
+          }`}
+        >
+          {urgency === 'imminent' ? 'Examination imminent' : 'Upcoming examination'}
         </span>
         <span className="ml-auto font-mono text-[11px] tracking-[0.1em] text-on-walnut-muted">
           FILE {exam.id.replace(/\D/g, '').padStart(4, '0')}
@@ -113,23 +133,30 @@ export function CountdownPanel({ exam, course, following = [], now, index }: Cou
             className="flex items-baseline gap-3"
             aria-label={days <= 0 ? 'Today' : days === 1 ? 'Tomorrow' : `In ${days} calendar days`}
           >
-            <span className="tabular text-[28px] sm:text-[34px] leading-none text-accent font-medium">T−</span>
-            <span className="tabular text-[84px] sm:text-[104px] leading-[0.85] font-medium text-mustard tracking-[-0.04em]">
-              {days}
+            <span
+              className={`tabular leading-none font-medium ${
+                urgency === 'distant' ? 'text-[24px] sm:text-[28px] text-on-walnut-muted' : 'text-[28px] sm:text-[34px] text-accent'
+              }`}
+            >
+              T−
             </span>
+            <span className={`tabular leading-[0.85] font-medium tracking-[-0.04em] ${figureClass[urgency]}`}>{days}</span>
             <span className="tabular text-[18px] sm:text-[20px] tracking-[0.12em] text-on-walnut">
               {dayUnit(days)}
             </span>
           </div>
 
-          <div aria-label={`Exactly ${left.d} days ${left.h} hours ${left.m} minutes until start`}>
-            <div className="mb-1.5 font-mono text-[10px] tracking-[0.14em] text-on-walnut-muted">UNTIL START</div>
-            <div className="flex gap-2" aria-hidden="true">
-              <Readout value={left.d} label="D" />
-              <Readout value={left.h} label="HRS" />
-              <Readout value={left.m} label="MIN" />
+          {/* Hours and minutes only matter in the final week. */}
+          {urgency !== 'distant' && (
+            <div aria-label={`Exactly ${left.d} days ${left.h} hours ${left.m} minutes until start`}>
+              <div className="mb-1.5 font-mono text-[10px] tracking-[0.14em] text-on-walnut-muted">UNTIL START</div>
+              <div className="flex gap-2" aria-hidden="true">
+                <Readout value={left.d} label="D" />
+                <Readout value={left.h} label="HRS" />
+                <Readout value={left.m} label="MIN" />
+              </div>
             </div>
-          </div>
+          )}
         </div>
 
         <dl className="mt-6 grid grid-cols-2 sm:grid-cols-3 gap-x-6 gap-y-3 text-[13px]">

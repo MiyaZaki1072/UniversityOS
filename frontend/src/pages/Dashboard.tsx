@@ -158,7 +158,7 @@ export function Dashboard() {
     const left = habits.total - habits.completed
     vitals.push({
       key: 'habits',
-      label: 'Daily protocol',
+      label: 'Habits today',
       icon: <ListChecks size={16} />,
       value: habits.completed,
       unit: `/ ${habits.total}`,

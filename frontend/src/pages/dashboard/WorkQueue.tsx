@@ -80,6 +80,7 @@ export function WorkQueue({ items, courses, now, index, onCompleteTask }: WorkQu
       <SectionHeader
         index={index}
         title="Work Queue"
+        meta="Deadlines"
         action={
           <>
             <span className="tabular text-[12px] text-ink-muted">{items.length} open</span>

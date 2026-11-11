@@ -114,7 +114,7 @@ export function TodayDocket({ items, courses, now, dateLabel, showNow, dueToday,
 
   return (
     <RecordCard className="h-full flex flex-col">
-      <SectionHeader index={index} title="Today's Docket" meta={dateLabel} />
+      <SectionHeader index={index} title="Today's Docket" meta={`Classes & events · ${dateLabel}`} />
       {sorted.length === 0 ? (
         <div className="flex-1">
           <EmptyState title="No classes today" body="Nothing on the timetable or calendar for this date." />

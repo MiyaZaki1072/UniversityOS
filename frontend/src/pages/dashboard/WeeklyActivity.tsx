@@ -73,18 +73,18 @@ export function WeeklyActivity({ byDay, weekTarget, todayIndex, index }: WeeklyA
 
         <dl className="grid grid-cols-3 md:grid-cols-1 border-t md:border-t-0 md:border-l border-rule divide-x md:divide-x-0 md:divide-y divide-rule">
           <div className="p-4">
-            <dt className="micro">Week to date</dt>
+            <dt className="text-[12.5px] text-ink-muted">Week to date</dt>
             <dd className="tabular text-xl text-ink mt-1">{formatMinutes(total)}</dd>
             {hasTarget && (
               <dd className="tabular text-[12px] text-ink-muted mt-1">{Math.round((total / weekTarget) * 100)}% of target</dd>
             )}
           </div>
           <div className="p-4">
-            <dt className="micro">Weekly target</dt>
+            <dt className="text-[12.5px] text-ink-muted">Weekly target</dt>
             <dd className="tabular text-xl text-ink mt-1">{hasTarget ? formatMinutes(weekTarget) : '—'}</dd>
           </div>
           <div className="p-4">
-            <dt className="micro">Daily average</dt>
+            <dt className="text-[12.5px] text-ink-muted">Daily average</dt>
             <dd className="tabular text-xl text-ink mt-1">{formatMinutes(avg)}</dd>
           </div>
         </dl>
