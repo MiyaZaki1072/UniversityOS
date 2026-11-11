@@ -5,7 +5,7 @@ import { Button } from '../components/ui/Button'
 import { EmptyState, PageHeader, RecordCard, SectionHeader } from '../components/ui/Panels'
 import { StatusStamp } from '../components/ui/StatusStamp'
 import { formatPercent } from '../lib/format'
-import { DEFAULT_SCALE, fromLocalInput, standingFor, toLocalInput, weightTotal, type LCourse } from '../lib/localDb'
+import { DEFAULT_SCALE, fromLocalInput, standingFor, requiredForBands, toLocalInput, weightTotal, type LCourse } from '../lib/localDb'
 import { useAppData, type Recipe } from '../lib/store'
 import { GradeStandingTable } from './dashboard/GradeStandingTable'
 
@@ -93,6 +93,12 @@ export function GradebookCoursePage() {
   const total = weightTotal(course)
   const ungradedWeight = Math.max(0, total - Number(s.graded_category_weight))
   const letter = s.letter_grade ?? s.projected_letter_grade
+
+  const need = requiredForBands(course)
+  const needBands = need ? [...need.bands].sort((a, b) => b.minimum - a.minimum) : []
+  const currentMin = letter ? needBands.find((b) => b.label === letter)?.minimum : undefined
+  const nextBandLabel =
+    currentMin === undefined ? undefined : [...needBands].reverse().find((b) => b.minimum > currentMin)?.label
 
   const scaleMins = course.scale.map((b) => Number(b.minimum_percentage))
   const scaleIssue =
@@ -296,6 +302,54 @@ export function GradebookCoursePage() {
                 {ungradedWeight}% of the weight is not graded yet; the current grade covers graded work only.
               </p>
             )}
+          </RecordCard>
+
+          <RecordCard>
+            <SectionHeader index="N" title="What do I need?" />
+            <div className="px-4 sm:px-5 py-3 flex flex-col gap-2">
+              {need === null ? (
+                <p className="text-[12.5px] text-ink-muted">Grade weights must total 100% before targets can be planned.</p>
+              ) : need.remainingWeight <= 0 ? (
+                <p className="text-[13px] text-ink-muted">Everything is graded — no scores left to plan.</p>
+              ) : (
+                <>
+                  <p className="text-[13px] text-ink-muted">
+                    Average you need on the remaining <span className="tabular text-ink">{formatPercent(String(need.remainingWeight), 1)}%</span> of the grade:
+                  </p>
+                  <ul className="flex flex-col gap-1">
+                    {needBands.map((b) => (
+                      <li
+                        key={b.label}
+                        className={`flex flex-col gap-1.5 rounded-xs px-2 py-1.5 ${b.label === nextBandLabel ? 'bg-surface-sunken' : ''}`}
+                      >
+                        <div className="flex items-baseline gap-2">
+                          <span className="font-display font-bold text-ink w-8 shrink-0">{b.label}</span>
+                          <span className="tabular text-[12px] text-ink-muted">{formatPercent(String(b.minimum), 1)}%+</span>
+                          <span className="ml-auto text-[13px]">
+                            {b.status === 'secured' ? (
+                              <span className="text-sage-ink">Already secured</span>
+                            ) : b.status === 'impossible' || b.required === null ? (
+                              <span className="text-danger">Out of reach</span>
+                            ) : (
+                              <span className="tabular text-ink">{formatPercent(String(b.required), 1)}%</span>
+                            )}
+                          </span>
+                        </div>
+                        {b.status === 'possible' && b.required !== null && (
+                          <div className="h-1 rounded-xs bg-surface-2 overflow-hidden" aria-hidden="true">
+                            <div
+                              className={`h-full ${b.required > 85 ? 'bg-mustard' : 'bg-accent'}`}
+                              style={{ width: `${Math.min(100, Math.max(0, b.required))}%` }}
+                            />
+                          </div>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                  <p className="text-[12px] text-ink-faint">Assumes the same average on every ungraded item.</p>
+                </>
+              )}
+            </div>
           </RecordCard>
 
           <RecordCard>
