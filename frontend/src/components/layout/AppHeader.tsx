@@ -1,4 +1,4 @@
-import { Bell, FileInput, Menu } from 'lucide-react'
+import { Bell, FileInput, Menu, Search } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { formatLongDate } from '../../lib/format'
 import { Emblem } from './Emblem'
@@ -14,6 +14,10 @@ interface AppHeaderProps {
   onOpenMenu: () => void
   /** Small status shown before the actions (e.g. save state). */
   status?: ReactNode
+  onSearch?: () => void
+  onBell?: () => void
+  /** Rendered under the bell when open (reminder list). */
+  bellPanel?: ReactNode
 }
 
 export function AppHeader({
@@ -26,6 +30,9 @@ export function AppHeader({
   onImport,
   onOpenMenu,
   status,
+  onSearch,
+  onBell,
+  bellPanel,
 }: AppHeaderProps) {
   const longDate = formatLongDate(today)
 
@@ -67,9 +74,20 @@ export function AppHeader({
           </div>
 
           {status}
+          {onSearch && (
+            <button
+              onClick={onSearch}
+              className="h-9 px-2.5 inline-flex items-center gap-2 rounded-xs text-ink-muted hover:text-ink hover:bg-surface-2"
+              aria-label="Search (Ctrl+K)"
+              title="Search (Ctrl+K)"
+            >
+              <Search size={18} />
+              <span className="hidden xl:inline micro">Ctrl K</span>
+            </button>
+          )}
           <button
             onClick={onImport}
-            className="h-9 px-2.5 inline-flex items-center gap-2 rounded-xs text-ink-muted hover:text-ink hover:bg-surface-2"
+            className="h-9 px-2.5 hidden sm:inline-flex items-center gap-2 rounded-xs text-ink-muted hover:text-ink hover:bg-surface-2"
             aria-label="Import courses with AI"
             title="Import courses with AI"
           >
@@ -77,9 +95,12 @@ export function AppHeader({
             <span className="hidden xl:inline micro">Import</span>
           </button>
 
+          <div className="relative">
           <button
+            onClick={onBell}
             className="relative h-9 w-9 grid place-items-center rounded-xs text-ink-muted hover:text-ink hover:bg-surface-2"
-            aria-label={`Notifications (${notifications} unread)`}
+            aria-label={`Reminders (${notifications} new)`}
+            aria-expanded={bellPanel ? true : false}
           >
             <Bell size={18} />
             {notifications > 0 && (
@@ -88,6 +109,14 @@ export function AppHeader({
               </span>
             )}
           </button>
+          {bellPanel && (
+            <>
+              {/* Click outside closes the panel. */}
+              <button className="fixed inset-0 z-20 cursor-default" aria-hidden="true" tabIndex={-1} onClick={onBell} />
+              <div className="fixed inset-x-2 top-14 z-30 flex justify-end sm:absolute sm:inset-x-auto sm:right-0 sm:top-11">{bellPanel}</div>
+            </>
+          )}
+          </div>
 
           <button
             className="ml-1 h-9 w-9 grid place-items-center rounded-xs border border-border-strong bg-surface font-display font-semibold text-ink"

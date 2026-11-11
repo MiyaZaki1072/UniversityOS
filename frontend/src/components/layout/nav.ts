@@ -4,6 +4,7 @@ import {
   CalendarDays,
   ClipboardList,
   FolderSearch,
+  GraduationCap,
   LayoutDashboard,
   ListChecks,
   NotebookPen,
@@ -34,6 +35,7 @@ export const navGroups: NavGroup[] = [
       { code: '02', label: 'Calendar', title: 'Temporal Scheduling', path: '/calendar', icon: CalendarDays },
       { code: '03', label: 'Courses', title: 'Academic Records', path: '/courses', icon: BookOpenText },
       { code: '04', label: 'Gradebook', title: 'Academic Ledger', path: '/gradebook', icon: NotebookPen },
+      { code: '10', label: 'Transcript', title: 'Transcript', path: '/semesters', icon: GraduationCap },
     ],
   },
   {
