@@ -66,6 +66,18 @@ export interface LCourse {
   scale: PlanBand[]
   exams: LExam[]
   resources: LResource[]
+  /** Letter the university actually gave (e.g. "B+"). Overrides the computed letter for GPA. */
+  official_grade?: string | null
+}
+
+/** A finished semester kept for the record and for GPA. */
+export interface LArchivedSemester {
+  id: number
+  name: string
+  start_date: string
+  end_date: string
+  archived_on: string // YYYY-MM-DD
+  courses: LCourse[]
 }
 
 export type TaskStatus = 'TODO' | 'IN_PROGRESS' | 'COMPLETED'
@@ -112,6 +124,8 @@ export interface LStudySession {
   /** null while the timer is running. At most one running session. */
   ended_at: string | null
   note: string
+  /** Pomodoro focus rounds: planned end. A running session never counts past it. */
+  ends_by?: string | null
 }
 
 /** A saved link, global (course_id null) or for one course. */
@@ -125,8 +139,28 @@ export interface LLink {
   favorite: boolean
 }
 
+export interface LPomodoroSettings {
+  focus_minutes: number
+  short_break_minutes: number
+  long_break_minutes: number
+  /** A long break after this many focus rounds. */
+  long_break_every: number
+}
+
+export interface LReminderSettings {
+  enabled: boolean
+  /** Minutes before a class starts. 0 = off. */
+  class_minutes_before: number
+  /** Hours before an exam or quiz starts. 0 = off. */
+  exam_hours_before: number
+  /** Hours before a task or graded item is due. 0 = off. */
+  deadline_hours_before: number
+}
+
 export interface LSettings {
   weekly_study_target_minutes: number
+  pomodoro: LPomodoroSettings
+  reminders: LReminderSettings
 }
 
 export interface LocalDB {
@@ -138,6 +172,7 @@ export interface LocalDB {
   habitLogs: LHabitLog[]
   studySessions: LStudySession[]
   links: LLink[]
+  pastSemesters: LArchivedSemester[]
   settings: LSettings
   nextId: number
 }
@@ -151,7 +186,12 @@ export const emptyDb = (): LocalDB => ({
   habitLogs: [],
   studySessions: [],
   links: [],
-  settings: { weekly_study_target_minutes: 1200 },
+  pastSemesters: [],
+  settings: {
+    weekly_study_target_minutes: 1200,
+    pomodoro: { focus_minutes: 25, short_break_minutes: 5, long_break_minutes: 15, long_break_every: 4 },
+    reminders: { enabled: false, class_minutes_before: 15, exam_hours_before: 24, deadline_hours_before: 24 },
+  },
   nextId: 1,
 })
 
@@ -168,7 +208,13 @@ export function normalizeDb(raw: LocalDB): LocalDB {
     habitLogs: raw.habitLogs ?? [],
     studySessions: raw.studySessions ?? [],
     links: [...(raw.links ?? [])],
-    settings: { ...base.settings, ...(raw.settings ?? {}) },
+    pastSemesters: raw.pastSemesters ?? [],
+    settings: {
+      ...base.settings,
+      ...(raw.settings ?? {}),
+      pomodoro: { ...base.settings.pomodoro, ...(raw.settings?.pomodoro ?? {}) },
+      reminders: { ...base.settings.reminders, ...(raw.settings?.reminders ?? {}) },
+    },
   }
   if (db.courses.some((c) => c.resources?.length)) {
     db.courses = db.courses.map((c) => {
@@ -178,6 +224,11 @@ export function normalizeDb(raw: LocalDB): LocalDB {
       return { ...c, resources: [] }
     })
   }
+  // A Pomodoro round left running (page closed) ends at its planned end, not "now".
+  const nowMs = Date.now()
+  db.studySessions = db.studySessions.map((s) =>
+    s.ended_at === null && s.ends_by && Date.parse(s.ends_by) <= nowMs ? { ...s, ended_at: s.ends_by } : s,
+  )
   // Links are rendered as <a href>; only web addresses are allowed (a restored file could hold anything).
   db.links = db.links.filter((l) => typeof l.url === 'string' && /^https?:\/\//i.test(l.url))
   return db
@@ -296,6 +347,114 @@ export function standingFor(c: LCourse): GradeStanding {
     is_final: isFinal,
     ungraded_assessments: ungraded,
   }
+}
+
+const scaleOf = (c: LCourse) =>
+  [...(c.scale.length ? c.scale : DEFAULT_SCALE)].sort((a, b) => Number(b.minimum_percentage) - Number(a.minimum_percentage))
+
+export interface CourseGrade {
+  letter: string | null
+  /** Grade point of that letter on the course's scale; null if unknown. */
+  point: number | null
+  credits: number
+  source: 'official' | 'final' | 'projected' | null
+}
+
+/** The letter that counts for GPA: official grade if entered, else final, else projected. */
+export function courseGrade(c: LCourse): CourseGrade {
+  const credits = Number(c.credits) || 0
+  const s = standingFor(c)
+  const bandFor = (l: string | null) => (l ? scaleOf(c).find((b) => b.grade_label.trim().toUpperCase() === l.toUpperCase()) : undefined)
+  // An official grade that is no longer on the course's scale can't be counted; fall back to the gradebook.
+  const official = bandFor(c.official_grade?.trim() || null) ? c.official_grade!.trim() : null
+  const letter = official ?? s.letter_grade ?? s.projected_letter_grade
+  const source: CourseGrade['source'] = official ? 'official' : s.letter_grade ? 'final' : s.projected_letter_grade ? 'projected' : null
+  const band = bandFor(letter)
+  const point = band && band.grade_point !== '' ? Number(band.grade_point) : null
+  return { letter, point, credits, source }
+}
+
+/** Credit-weighted GPA over courses with a known grade point and credits > 0. */
+export function gpaOf(courses: LCourse[]): { gpa: number | null; credits: number; counted: number } {
+  let points = 0
+  let credits = 0
+  let counted = 0
+  for (const c of courses) {
+    const g = courseGrade(c)
+    if (g.point === null || g.credits <= 0) continue
+    points += g.point * g.credits
+    credits += g.credits
+    counted++
+  }
+  return { gpa: credits > 0 ? points / credits : null, credits, counted }
+}
+
+export interface RequiredForBand {
+  label: string
+  minimum: number
+  /** Average % needed on everything not graded yet; null when nothing is left to grade. */
+  required: number | null
+  status: 'secured' | 'possible' | 'impossible'
+}
+
+/**
+ * For each letter band: the average score (%) needed on all ungraded work to finish with at
+ * least that band. Categories without items count as fully ungraded. Needs weights to total 100.
+ */
+export function requiredForBands(c: LCourse): { bands: RequiredForBand[]; remainingWeight: number } | null {
+  if (c.categories.length === 0 || weightTotal(c) !== 100) return null
+  const finalAt = (p: number) =>
+    c.categories.reduce((sum, g) => {
+      const w = Number(g.weight_percent)
+      if (g.assessments.length === 0) return sum + p * w
+      let earned = 0
+      let possible = 0
+      for (const a of g.assessments) {
+        const max = Number(a.points_possible)
+        if (!(max > 0)) continue
+        possible += max
+        earned += a.points_earned === null || a.points_earned === '' ? p * max : Number(a.points_earned)
+      }
+      return possible > 0 ? sum + (earned / possible) * w : sum + p * w
+    }, 0)
+  const base = finalAt(0)
+  const slope = finalAt(1) - base
+  const bands = scaleOf(c).map((b) => {
+    const minimum = Number(b.minimum_percentage)
+    if (slope <= 1e-9) {
+      return { label: b.grade_label, minimum, required: null, status: base >= minimum - 1e-9 ? 'secured' : 'impossible' } as RequiredForBand
+    }
+    const need = ((minimum - base) / slope) * 100
+    const status: RequiredForBand['status'] = need <= 0 ? 'secured' : need > 100 + 1e-9 ? 'impossible' : 'possible'
+    return { label: b.grade_label, minimum, required: Math.max(0, need), status }
+  })
+  return { bands, remainingWeight: Math.round(slope * 100) / 100 }
+}
+
+/* ------------------------------------------------------------------ */
+/* Semesters                                                           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Move the current semester and its courses into `pastSemesters` (kept for GPA) and clear them.
+ * Tasks, links and study sessions stay but lose their course link. Mutates `draft`.
+ */
+export function archiveCurrentSemester(draft: LocalDB, nid: () => number): void {
+  if (!draft.semester && draft.courses.length === 0) return
+  draft.pastSemesters.push({
+    id: nid(),
+    name: draft.semester?.name ?? 'Untitled semester',
+    start_date: draft.semester?.start_date ?? '',
+    end_date: draft.semester?.end_date ?? '',
+    archived_on: todayKey(),
+    courses: structuredClone(draft.courses),
+  })
+  const gone = new Set(draft.courses.map((c) => c.id))
+  for (const x of [...draft.tasks, ...draft.links, ...draft.studySessions]) {
+    if (x.course_id !== null && gone.has(x.course_id)) x.course_id = null
+  }
+  draft.semester = null
+  draft.courses = []
 }
 
 /* ------------------------------------------------------------------ */
@@ -440,7 +599,11 @@ export function habitsToday(db: LocalDB, today: string): DashboardSummary['habit
 
 /** Whole minutes of a session; a running session counts up to `now`. */
 export function sessionMinutes(s: LStudySession, now: Date = new Date()): number {
-  const end = s.ended_at ? Date.parse(s.ended_at) : now.getTime()
+  const end = s.ended_at
+    ? Date.parse(s.ended_at)
+    : s.ends_by
+      ? Math.min(now.getTime(), Date.parse(s.ends_by))
+      : now.getTime()
   return Math.max(0, Math.floor((end - Date.parse(s.started_at)) / 60_000))
 }
 
@@ -537,12 +700,15 @@ export function buildSummary(db: LocalDB, now: Date = new Date()): DashboardSumm
 /* ------------------------------------------------------------------ */
 
 export function applyPlan(db: LocalDB, plan: ImportPlan, makeActive: boolean): { next: LocalDB; added: number; skipped: string[] } {
-  let id = db.nextId
+  const start = normalizeDb(structuredClone(db))
+  let id = start.nextId
   const nid = () => id++
   const sameSemester = plan.semester !== null && db.semester !== null && plan.semester.name.trim() === db.semester.name.trim()
   const replaceSemester = plan.semester !== null && !sameSemester && (makeActive || db.semester === null)
-  // A new semester replaces the current one (one semester at a time on this device).
-  const keep = replaceSemester ? [] : db.courses
+  // A new semester replaces the current one; the old one is kept in pastSemesters.
+  if (replaceSemester) archiveCurrentSemester(start, nid)
+  db = start
+  const keep = db.courses
   const existing = new Set(keep.map((c) => c.code.toUpperCase()))
   const skipped: string[] = []
   const added: LCourse[] = []
