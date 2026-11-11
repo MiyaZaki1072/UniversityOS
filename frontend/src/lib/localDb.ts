@@ -4,7 +4,7 @@
  * data can be moved to the backend later via the backup file.
  */
 import { USER_TZ } from './format'
-import { COURSE_COLORS, type ImportPlan, type PlanBand } from './importConfig'
+import { COURSE_COLORS, suScale, type ImportPlan, type PlanBand } from './importConfig'
 import type { CourseRef, DashboardSummary, GradeStanding, Occurrence } from './types'
 
 export const STORAGE_KEY = 'university-os:v1'
@@ -68,7 +68,16 @@ export interface LCourse {
   resources: LResource[]
   /** Letter the university actually gave (e.g. "B+"). Overrides the computed letter for GPA. */
   official_grade?: string | null
+  /** LETTER (default) or SU: satisfactory/unsatisfactory, never counted in GPA. */
+  grading?: 'LETTER' | 'SU'
 }
+
+export const isSU = (c: Pick<LCourse, 'grading'>) => c.grading === 'SU'
+
+/** Pass mark (%) of an S/U course: the S band's minimum. */
+export const suPassMark = (c: LCourse) => c.scale.find((b) => b.grade_label.trim().toUpperCase() === 'S')?.minimum_percentage ?? '50'
+
+export { suScale }
 
 /** A finished semester kept for the record and for GPA. */
 export interface LArchivedSemester {
@@ -354,9 +363,11 @@ const scaleOf = (c: LCourse) =>
 
 export interface CourseGrade {
   letter: string | null
-  /** Grade point of that letter on the course's scale; null if unknown. */
+  /** Grade point of that letter on the course's scale; null if unknown or S/U. */
   point: number | null
   credits: number
+  /** S/U course: shown, but never counted in GPA. */
+  su: boolean
   source: 'official' | 'final' | 'projected' | null
 }
 
@@ -370,8 +381,9 @@ export function courseGrade(c: LCourse): CourseGrade {
   const letter = official ?? s.letter_grade ?? s.projected_letter_grade
   const source: CourseGrade['source'] = official ? 'official' : s.letter_grade ? 'final' : s.projected_letter_grade ? 'projected' : null
   const band = bandFor(letter)
-  const point = band && band.grade_point !== '' ? Number(band.grade_point) : null
-  return { letter, point, credits, source }
+  const su = isSU(c)
+  const point = !su && band && band.grade_point !== '' ? Number(band.grade_point) : null
+  return { letter, point, credits, source, su }
 }
 
 /** Credit-weighted GPA over courses with a known grade point and credits > 0. */
@@ -733,7 +745,8 @@ export function applyPlan(db: LocalDB, plan: ImportPlan, makeActive: boolean): {
         weight_percent: g.weight_percent,
         assessments: g.assessments.map((a) => ({ id: nid(), ...a })),
       })),
-      scale: pc.scale.length ? pc.scale : DEFAULT_SCALE,
+      grading: pc.grading,
+      scale: pc.grading === 'SU' ? pc.scale : pc.scale.length ? pc.scale : DEFAULT_SCALE,
       exams: pc.exams.map((e) => ({ id: nid(), ...e })),
       resources: pc.resources.map((r) => ({ id: nid(), ...r })),
     })

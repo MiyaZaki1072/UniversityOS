@@ -33,7 +33,7 @@ function CourseRows({ courses, onGrade }: { courses: LCourse[]; onGrade: (course
                 {g.letter ?? '—'}
                 {g.point !== null && <span className="text-ink-muted text-[12px]"> · {g.point.toFixed(2)}</span>}
               </div>
-              <div className="micro text-ink-faint">{g.source ?? 'no grade'}</div>
+              <div className="micro text-ink-faint">{g.su ? `S/U · not in GPA${g.source ? ` · ${g.source}` : ''}` : g.source ?? 'no grade'}</div>
             </div>
             <label className="flex items-center gap-2 shrink-0">
               <span className="micro">Official grade</span>
