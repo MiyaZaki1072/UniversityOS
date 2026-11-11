@@ -47,9 +47,9 @@ export function AppHeader({
         >
           <Menu size={20} />
         </button>
-        <div className="lg:hidden flex items-center gap-2 text-ink">
+        <div className="lg:hidden flex shrink-0 items-center gap-2 text-ink">
           <Emblem size={24} />
-          <span className="font-display text-[14px] font-semibold tracking-[0.14em]">UNIVERSITY OS</span>
+          <span className="font-display text-[14px] font-semibold tracking-[0.14em] whitespace-nowrap">UNIVERSITY OS</span>
         </div>
 
         {/* Desktop: breadcrumbs */}
@@ -65,9 +65,10 @@ export function AppHeader({
         </nav>
 
         <div className="ml-auto flex items-center gap-1 sm:gap-2">
-          <div className="hidden md:flex items-center gap-4 mr-3 micro">
-            {semesterName && <span>{semesterName}</span>}
-            <span className="w-px h-4 bg-border" aria-hidden="true" />
+          {/* Tablet widths only have room for the date; the semester joins it once the sidebar layout starts. */}
+          <div className="hidden md:flex items-center gap-4 mr-3 micro whitespace-nowrap">
+            {semesterName && <span className="hidden lg:inline">{semesterName}</span>}
+            {semesterName && <span className="hidden lg:block w-px h-4 bg-border" aria-hidden="true" />}
             <time dateTime={today} className="text-ink">
               {longDate}
             </time>
