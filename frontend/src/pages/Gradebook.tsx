@@ -5,7 +5,7 @@ import { Button } from '../components/ui/Button'
 import { EmptyState, PageHeader, RecordCard, SectionHeader } from '../components/ui/Panels'
 import { StatusStamp } from '../components/ui/StatusStamp'
 import { formatPercent } from '../lib/format'
-import { DEFAULT_SCALE, fromLocalInput, standingFor, requiredForBands, toLocalInput, weightTotal, type LCourse } from '../lib/localDb'
+import { DEFAULT_SCALE, fromLocalInput, isSU, standingFor, requiredForBands, suPassMark, suScale, toLocalInput, weightTotal, type LCourse } from '../lib/localDb'
 import { useAppData, type Recipe } from '../lib/store'
 import { GradeStandingTable } from './dashboard/GradeStandingTable'
 
@@ -352,6 +352,30 @@ export function GradebookCoursePage() {
             </div>
           </RecordCard>
 
+          {isSU(course) ? (
+            <RecordCard>
+              <SectionHeader index="S" title="S/U grading" />
+              <div className="p-4 sm:p-5 flex flex-col gap-3">
+                <label className="flex items-center gap-3">
+                  <span className="micro !text-ink">Pass mark</span>
+                  <Cell
+                    aria-label="Pass mark percent"
+                    type="number"
+                    min={0}
+                    max={100}
+                    step="0.5"
+                    value={suPassMark(course)}
+                    onChange={(e) => edit((c) => (c.scale = suScale(num(e.target.value))))}
+                    className="w-24 tabular text-right"
+                  />
+                  <span className="text-ink-muted">%</span>
+                </label>
+                <p className="text-[12.5px] text-ink-muted">
+                  S at or above the pass mark, U below it. Not counted in GPA. Change the grading type with Edit on the course page.
+                </p>
+              </div>
+            </RecordCard>
+          ) : (
           <RecordCard>
             <SectionHeader
               index="S"
@@ -408,6 +432,7 @@ export function GradebookCoursePage() {
               {scaleIssue && <span className="text-[12px] text-danger">{scaleIssue}</span>}
             </div>
           </RecordCard>
+          )}
         </div>
       </div>
     </>

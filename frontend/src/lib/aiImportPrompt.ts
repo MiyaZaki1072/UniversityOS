@@ -67,7 +67,7 @@ RULES
 6. If a category has several graded items (e.g. 5 homework sets), list each one under "assessments" with its maximum points. If the syllabus doesn't split it, add one assessment with points_possible 100.
 7. points_earned is my score. Use null for anything not graded yet. Use 0 only if I actually scored 0.
 8. Put exams and quizzes that have a date and time in "exams" (type "EXAM" or "QUIZ"). Put assignment deadlines in the matching assessment's "due_at".
-9. Only add "grade_scale" if the syllabus gives letter-grade cut-offs. It must include a band starting at 0 (usually F).
+9. Only add "grade_scale" if the syllabus gives letter-grade cut-offs. It must include a band starting at 0 (usually F). If a course is graded pass/fail (S/U, satisfactory/unsatisfactory), set "grading": "S/U" instead and, if the syllabus gives it, "su_pass_percentage" (the minimum % for S); leave out "grade_scale" for that course.
 10. Only add "semester" if I tell you the semester's name and its start and end dates. Without it, the courses go into my current semester.
 11. If something is unclear or missing, still give the JSON, and list your questions in "notes".
 
@@ -99,6 +99,8 @@ FORMAT (fields marked optional can be left out)
           ]
         }
       ],
+      "grading": "letter",                   // optional: "letter" (default) or "S/U" for pass/fail courses
+      "su_pass_percentage": 50,              // optional, S/U courses only: minimum % for S
       "grade_scale": [                       // optional
         { "grade_label": "A", "minimum_percentage": 80, "grade_point": 4 },
         { "grade_label": "F", "minimum_percentage": 0, "grade_point": 0 }

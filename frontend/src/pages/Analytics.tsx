@@ -107,6 +107,7 @@ function buildReport(db: LocalDB, now: Date): Report {
   let sum = 0
   let credits = 0
   for (const c of db.courses) {
+    if (c.grading === 'SU') continue // pass/fail courses aren't part of the grade average
     const cr = Number(c.credits)
     const cur = standingFor(c).current_grade
     if (cur !== null && cr > 0) {
