@@ -199,6 +199,14 @@ export interface LSettings {
   reminders: LReminderSettings
 }
 
+export interface LWeeklyReview {
+  id: number
+  week_start: string // YYYY-MM-DD, Monday of the week being planned
+  done_on: string // YYYY-MM-DD
+  wins: string
+  focus: string // "Main focus this week"
+}
+
 export interface LocalDB {
   version: 1
   semester: LSemester | null
@@ -209,6 +217,7 @@ export interface LocalDB {
   studySessions: LStudySession[]
   links: LLink[]
   pastSemesters: LArchivedSemester[]
+  weeklyReviews: LWeeklyReview[]
   settings: LSettings
   nextId: number
 }
@@ -223,6 +232,7 @@ export const emptyDb = (): LocalDB => ({
   studySessions: [],
   links: [],
   pastSemesters: [],
+  weeklyReviews: [],
   settings: {
     weekly_study_target_minutes: 1200,
     pomodoro: { focus_minutes: 25, short_break_minutes: 5, long_break_minutes: 15, long_break_every: 4 },
@@ -245,6 +255,7 @@ export function normalizeDb(raw: LocalDB): LocalDB {
     studySessions: raw.studySessions ?? [],
     links: [...(raw.links ?? [])],
     pastSemesters: raw.pastSemesters ?? [],
+    weeklyReviews: raw.weeklyReviews ?? [],
     settings: {
       ...base.settings,
       ...(raw.settings ?? {}),
@@ -870,6 +881,167 @@ export function topicStats(c: LCourse, today: string): TopicStats {
   }
 
   return { total: topics.length, red, amber, green, unrated, due }
+}
+
+/* ------------------------------------------------------------------ */
+/* Weekly reviews                                                      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Monday of the week a review done on `today` plans. A weekend review plans the coming week,
+ * so a Sunday reset still counts on Monday.
+ */
+export function reviewWeekStart(today: string): string {
+  return weekdayOf(today) >= 5 ? addDays(weekStart(today), 7) : weekStart(today)
+}
+
+/** The review recorded for the week `today` belongs to (see `reviewWeekStart`), if any. */
+export function reviewDoneThisWeek(db: LocalDB, today: string): LWeeklyReview | null {
+  const week = reviewWeekStart(today)
+  return (db.weeklyReviews ?? []).find((r) => r.week_start === week) ?? null
+}
+
+export interface LastWeekRecap {
+  studyMinutes: number
+  targetMinutes: number
+  tasksDone: number
+  habitPercent: number | null
+  classesMissed: number
+}
+
+/** Recap metrics for the Monday–Sunday week immediately preceding `reviewWeekStart(today)`. */
+export function lastWeekRecap(db: LocalDB, today: string): LastWeekRecap {
+  const thisMon = reviewWeekStart(today)
+  const lastMon = addDays(thisMon, -7)
+  const lastSun = addDays(thisMon, -1)
+
+  let studyMinutes = 0
+  for (let i = 0; i < 7; i++) {
+    studyMinutes += studyMinutesOn(db, addDays(lastMon, i))
+  }
+
+  let tasksDone = 0
+  for (const t of db.tasks) {
+    if (!t.completed_at || Number.isNaN(Date.parse(t.completed_at))) continue
+    const completedDate = todayKey(new Date(t.completed_at))
+    if (completedDate >= lastMon && completedDate <= lastSun) tasksDone++
+  }
+
+  let classesMissed = 0
+  for (const c of db.courses) {
+    for (const r of c.attendance ?? []) {
+      if (r.status === 'ABSENT' && r.date >= lastMon && r.date <= lastSun) classesMissed++
+    }
+  }
+
+  const activeHabits = db.habits.filter((h) => !h.archived)
+  let habitPercent: number | null = null
+  if (activeHabits.length > 0) {
+    let expected = 0
+    let done = 0
+    for (const h of activeHabits) {
+      const target = h.frequency === 'DAILY' ? 7 : Math.max(1, h.target_per_week)
+      expected += target
+      // Extra check-ins on one habit must not make up for another.
+      done += Math.min(target, habitWeekCount(db, h.id, lastMon))
+    }
+    habitPercent = expected > 0 ? Math.min(100, Math.round((done / expected) * 100)) : null
+  }
+
+  return {
+    studyMinutes,
+    targetMinutes: db.settings.weekly_study_target_minutes,
+    tasksDone,
+    habitPercent,
+    classesMissed,
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Semester workload                                                   */
+/* ------------------------------------------------------------------ */
+
+export interface WeekLoadItem {
+  kind: 'EXAM' | 'QUIZ' | 'GRADED' | 'TASK'
+  title: string
+  course_id: number | null
+  date: string // YYYY-MM-DD
+  weight: number | null
+}
+
+export interface WeekLoad {
+  week_start: string // Monday, YYYY-MM-DD
+  index: number // 1-based week of term
+  score: number
+  items: WeekLoadItem[]
+}
+
+export interface SemesterLoad {
+  weeks: WeekLoad[]
+  max: number
+}
+
+const LOAD_KIND_ORDER: Record<WeekLoadItem['kind'], number> = { EXAM: 0, QUIZ: 1, GRADED: 2, TASK: 3 }
+
+/** Weekly workload across the current semester (exams, graded deadlines, and tasks). */
+export function semesterLoad(db: LocalDB): SemesterLoad | null {
+  const sem = db.semester
+  if (!sem || !isDateKey(sem.start_date) || !isDateKey(sem.end_date) || sem.start_date > sem.end_date) {
+    return null
+  }
+
+  const firstWeek = weekStart(sem.start_date)
+  const lastWeek = weekStart(sem.end_date)
+  const weeks: WeekLoad[] = []
+  const byWeek = new Map<string, WeekLoad>()
+  let index = 1
+  for (let w = firstWeek; w <= lastWeek; w = addDays(w, 7)) {
+    const entry: WeekLoad = { week_start: w, index: index++, score: 0, items: [] }
+    weeks.push(entry)
+    byWeek.set(w, entry)
+  }
+
+  const addItem = (iso: string, item: Omit<WeekLoadItem, 'date'>, score: number) => {
+    if (Number.isNaN(Date.parse(iso))) return
+    const date = todayKey(new Date(iso))
+    const bucket = byWeek.get(weekStart(date))
+    if (!bucket) return
+    bucket.items.push({ ...item, date })
+    bucket.score += score
+  }
+
+  for (const c of db.courses) {
+    for (const e of c.exams) {
+      addItem(e.start_at, { kind: e.event_type, title: e.title, course_id: c.id, weight: null }, e.event_type === 'EXAM' ? 3 : 1.5)
+    }
+    for (const g of c.categories) {
+      const catWeight = Number(g.weight_percent)
+      const count = g.assessments.length
+      const perItem = Number.isFinite(catWeight) && catWeight > 0 && count > 0 ? catWeight / count : 0
+      for (const a of g.assessments) {
+        if (!a.due_at) continue
+        addItem(
+          a.due_at,
+          { kind: 'GRADED', title: a.title, course_id: c.id, weight: perItem > 0 ? perItem : null },
+          Math.max(0.5, perItem / 5),
+        )
+      }
+    }
+  }
+
+  for (const t of db.tasks) {
+    if (!t.due_at) continue
+    addItem(t.due_at, { kind: 'TASK', title: t.title, course_id: t.course_id, weight: null }, 0.5)
+  }
+
+  let max = 0
+  for (const w of weeks) {
+    w.score = Math.round(w.score * 1000) / 1000
+    w.items.sort((a, b) => a.date.localeCompare(b.date) || LOAD_KIND_ORDER[a.kind] - LOAD_KIND_ORDER[b.kind])
+    if (w.score > max) max = w.score
+  }
+
+  return { weeks, max }
 }
 
 /** All occurrences between two dates (inclusive), sorted by start. */

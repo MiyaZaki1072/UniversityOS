@@ -1,10 +1,55 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { CheckCircle2, Clock, Flame, Target } from 'lucide-react'
 import { EmptyState, PageHeader, RecordCard, SectionHeader, StatCard } from '../components/ui/Panels'
 import { formatMinutes } from '../lib/format'
-import { addDays, guessAccuracy, habitStreak, sessionMinutes, standingFor, todayKey, weekStart, type GuessAccuracy, type LocalDB } from '../lib/localDb'
+import {
+  addDays,
+  guessAccuracy,
+  habitStreak,
+  semesterLoad,
+  sessionMinutes,
+  standingFor,
+  todayKey,
+  weekStart,
+  type GuessAccuracy,
+  type LocalDB,
+  type WeekLoadItem,
+} from '../lib/localDb'
 import { useAppData } from '../lib/store'
 import { GradeStandingTable } from './dashboard/GradeStandingTable'
+
+type LoadLevel = 'none' | 'light' | 'medium' | 'heavy'
+
+function loadLevel(score: number, max: number): LoadLevel {
+  if (score <= 0 || max <= 0) return 'none'
+  const ratio = score / max
+  if (ratio <= 0.33) return 'light'
+  if (ratio <= 0.66) return 'medium'
+  return 'heavy'
+}
+
+const LOAD_CELL_CLASS: Record<LoadLevel, string> = {
+  none: 'bg-surface-sunken border-rule text-ink-faint',
+  light: 'bg-accent-wash border-border text-ink-muted',
+  medium: 'bg-mustard-wash border-mustard text-mustard-ink',
+  heavy: 'bg-danger-wash border-danger text-danger',
+}
+
+const LOAD_LABEL: Record<LoadLevel, string> = {
+  none: 'no load',
+  light: 'light',
+  medium: 'medium',
+  heavy: 'heavy',
+}
+
+const KIND_META: Record<WeekLoadItem['kind'], { label: string; tone: string }> = {
+  EXAM: { label: 'Exam', tone: 'text-accent-strong' },
+  QUIZ: { label: 'Quiz', tone: 'text-mustard-ink' },
+  GRADED: { label: 'Graded', tone: 'text-ink-muted' },
+  TASK: { label: 'Task', tone: 'text-ink-muted' },
+}
+
+const fmtWeight = (w: number) => `${Number.isInteger(w) ? w : Number(w.toFixed(1))}% of grade`
 
 const MAX_WEEKS = 16
 
@@ -145,6 +190,22 @@ export function AnalyticsPage() {
   const { db, data } = useAppData()
   const r = useMemo(() => buildReport(db, new Date()), [db])
   const courses = useMemo(() => new Map((data?.courses ?? []).map((c) => [c.id, c])), [data])
+  const load = useMemo(() => semesterLoad(db), [db])
+  const currentWeek = weekStart(todayKey())
+  const [pickedWeek, setPickedWeek] = useState<string | null>(null)
+
+  const defaultWeekStart = useMemo(() => {
+    if (!load || load.weeks.length === 0) return null
+    const nextHeavy = load.weeks.find((w) => w.week_start >= currentWeek && loadLevel(w.score, load.max) === 'heavy')
+    if (nextHeavy) return nextHeavy.week_start
+    const cur = load.weeks.find((w) => w.week_start === currentWeek)
+    return cur ? cur.week_start : load.weeks[0].week_start
+  }, [load, currentWeek])
+
+  const selectedWeek =
+    load?.weeks.find((w) => w.week_start === pickedWeek) ??
+    load?.weeks.find((w) => w.week_start === defaultWeekStart) ??
+    null
 
   const target = db.settings.weekly_study_target_minutes
   const period = `${shortDate(r.start)} – ${shortDate(r.end)}`
@@ -381,6 +442,125 @@ export function AnalyticsPage() {
                 </div>
               )
             })()
+          )}
+        </RecordCard>
+
+        <RecordCard>
+          <SectionHeader index="06" title="Semester load" meta="Exams, graded work and tasks per week" />
+          {!load ? (
+            <EmptyState code="NO TERM DATES" title="Set the semester dates to see your workload by week." />
+          ) : load.max === 0 ? (
+            <EmptyState code="NOTHING SCHEDULED" title="Nothing scheduled yet." />
+          ) : (
+            <>
+              <div className="px-4 sm:px-5 py-4 flex flex-col gap-3">
+                <div className="grid grid-cols-8 lg:grid-cols-[repeat(auto-fit,minmax(36px,1fr))] gap-1.5">
+                  {load.weeks.map((w) => {
+                    const lvl = loadLevel(w.score, load.max)
+                    const isCurrent = w.week_start === currentWeek
+                    const isSelected = selectedWeek?.week_start === w.week_start
+                    return (
+                      <div key={w.week_start} className="flex flex-col items-center gap-1 min-w-0">
+                        <button
+                          type="button"
+                          onClick={() => setPickedWeek(w.week_start)}
+                          aria-pressed={isSelected}
+                          aria-label={`Week ${w.index}, ${w.items.length} ${w.items.length === 1 ? 'item' : 'items'}, ${LOAD_LABEL[lvl]}`}
+                          className={
+                            'w-full h-9 rounded-xs border tabular text-[11px] font-medium grid place-items-center cursor-pointer transition-colors ' +
+                            LOAD_CELL_CLASS[lvl] +
+                            (isCurrent ? ' ring-2 ring-accent ring-offset-1 ring-offset-surface' : '') +
+                            (isSelected ? ' outline-2 outline-ink -outline-offset-2' : '')
+                          }
+                        >
+                          {w.items.length > 0 ? w.items.length : ''}
+                        </button>
+                        <span
+                          className={`tabular text-[10.5px] leading-none ${
+                            isSelected ? 'text-ink font-semibold' : 'text-ink-muted'
+                          }`}
+                        >
+                          W{w.index}
+                        </span>
+                        {isCurrent && (
+                          <span className="tabular text-[9.5px] uppercase tracking-wider text-accent-strong leading-none">
+                            now
+                          </span>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] text-ink-muted">
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="w-3 h-3 rounded-[2px] border bg-accent-wash border-border" aria-hidden="true" />
+                    Light
+                  </span>
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="w-3 h-3 rounded-[2px] border bg-mustard-wash border-mustard" aria-hidden="true" />
+                    Medium
+                  </span>
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="w-3 h-3 rounded-[2px] border bg-danger-wash border-danger" aria-hidden="true" />
+                    Heavy
+                  </span>
+                </div>
+              </div>
+
+              {selectedWeek && (
+                <div className="border-t border-rule">
+                  <div className="px-4 sm:px-5 py-2.5 bg-surface-sunken border-b border-rule flex flex-wrap items-center justify-between gap-2">
+                    <span className="tabular text-[12px] font-medium text-ink">
+                      Week {selectedWeek.index} · {shortDate(selectedWeek.week_start)} – {shortDate(addDays(selectedWeek.week_start, 6))}
+                    </span>
+                    <span className="tabular text-[12px] text-ink-muted">
+                      {selectedWeek.items.length} {selectedWeek.items.length === 1 ? 'item' : 'items'}
+                    </span>
+                  </div>
+                  {selectedWeek.items.length === 0 ? (
+                    <p className="px-4 sm:px-5 py-3 text-[13px] text-ink-muted">Nothing due this week.</p>
+                  ) : (
+                    <ul className="divide-y divide-rule">
+                      {selectedWeek.items.map((item, idx) => {
+                        const course = item.course_id !== null ? courses.get(item.course_id) : undefined
+                        const meta = KIND_META[item.kind]
+                        return (
+                          <li
+                            key={`${item.kind}-${item.course_id ?? 'none'}-${item.date}-${item.title}-${idx}`}
+                            className="px-4 sm:px-5 py-2.5 flex items-start justify-between gap-3"
+                          >
+                            <div className="min-w-0 flex-1">
+                              <div className="font-medium text-ink leading-snug break-words">{item.title}</div>
+                              <div className="mt-0.5 flex flex-wrap items-center gap-x-2 tabular text-[12px] text-ink-muted">
+                                <span>{shortDate(item.date)}</span>
+                                <span>·</span>
+                                <span className={meta.tone}>{meta.label}</span>
+                                {course && (
+                                  <>
+                                    <span>·</span>
+                                    <span className="inline-flex items-center gap-1.5">
+                                      <span className="w-2 h-2 rounded-[1px]" style={{ background: course.color }} aria-hidden="true" />
+                                      {course.code}
+                                    </span>
+                                  </>
+                                )}
+                                {item.kind === 'GRADED' && item.weight !== null && (
+                                  <>
+                                    <span>·</span>
+                                    <span>{fmtWeight(item.weight)}</span>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                          </li>
+                        )
+                      })}
+                    </ul>
+                  )}
+                </div>
+              )}
+            </>
           )}
         </RecordCard>
 
