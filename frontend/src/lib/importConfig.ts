@@ -60,6 +60,9 @@ export interface PlanResource {
 }
 
 /** Pass/fail courses: S (satisfactory) from the pass mark, U below it. No grade points, not in GPA. */
+/** Usual 4-point values, used when an imported band leaves its grade point out. */
+const STANDARD_POINTS: Record<string, string> = { A: '4', 'B+': '3.5', B: '3', 'C+': '2.5', C: '2', 'D+': '1.5', D: '1', F: '0' }
+
 export function suScale(passMark: string | number = 50): PlanBand[] {
   return [
     { grade_label: 'S', minimum_percentage: String(passMark), grade_point: '' },
@@ -364,8 +367,14 @@ export function parseImport(text: string, existingCodes: string[] = []): ParseRe
       if (!isObj(rb)) return c.err(bp, 'should be an object.')
       const gl = c.text(rb, 'grade_label', bp, { required: true, max: 10 })
       const min = c.decimal(rb.minimum_percentage, `${bp}.minimum_percentage`, { required: true, min: 0, max: 100 })
-      const gpnt = c.decimal(rb.grade_point, `${bp}.grade_point`, { min: 0 }) ?? '0'
-      if (gl && min !== null) scale.push({ grade_label: gl, minimum_percentage: min, grade_point: gpnt })
+      let gpnt = c.decimal(rb.grade_point, `${bp}.grade_point`, { min: 0 })
+      if (gl && gpnt === null && (rb.grade_point === undefined || rb.grade_point === null || rb.grade_point === '')) {
+        // A missing grade point must not silently count as 0 in GPA: use the usual point for that letter.
+        gpnt = STANDARD_POINTS[gl.trim().toUpperCase()] ?? null
+        if (gpnt === null) c.warn(`${bp}.grade_point`, `No grade point for "${gl}"; it won't count toward GPA until you add one.`)
+        else c.warn(`${bp}.grade_point`, `No grade point for "${gl}"; used ${gpnt}.`)
+      }
+      if (gl && min !== null) scale.push({ grade_label: gl, minimum_percentage: min, grade_point: gpnt ?? '' })
     })
     if (scale.length) {
       const mins = scale.map((b) => Number(b.minimum_percentage))
