@@ -661,6 +661,100 @@ export function guessAccuracy(courses: LCourse[]): GuessAccuracy {
   }
 }
 
+export interface WhatIfGpa {
+  semester: number | null
+  cumulative: number | null
+  credits: number
+}
+
+/**
+ * Simulated semester and cumulative GPA using `picks[course.id]` when valid on that course's scale,
+ * falling back to `courseGrade(c)`. S/U courses never count.
+ */
+export function whatIfGpa(
+  past: LCourse[],
+  current: LCourse[],
+  picks: Record<number, string | null>,
+): WhatIfGpa {
+  const pastRes = gpaOf(past)
+  const pastPoints = pastRes.gpa !== null ? pastRes.gpa * pastRes.credits : 0
+  let curPoints = 0
+  let curCredits = 0
+
+  for (const c of current) {
+    if (isSU(c)) continue
+    const credits = Number(c.credits) || 0
+    if (credits <= 0) continue
+
+    const rawPick = picks[c.id]?.trim() ?? ''
+    const pickedBand = rawPick
+      ? scaleOf(c).find((b) => b.grade_label.trim().toUpperCase() === rawPick.toUpperCase())
+      : undefined
+    const pickedPoint =
+      pickedBand && pickedBand.grade_point !== '' && Number.isFinite(Number(pickedBand.grade_point))
+        ? Number(pickedBand.grade_point)
+        : null
+
+    const point = pickedPoint !== null ? pickedPoint : courseGrade(c).point
+    if (point === null) continue
+    curPoints += point * credits
+    curCredits += credits
+  }
+
+  const totalCredits = pastRes.credits + curCredits
+  return {
+    semester: curCredits > 0 ? curPoints / curCredits : null,
+    cumulative: totalCredits > 0 ? (pastPoints + curPoints) / totalCredits : null,
+    credits: totalCredits,
+  }
+}
+
+export interface RequiredSemesterGpa {
+  needed: number | null
+  status: 'secured' | 'possible' | 'impossible'
+}
+
+/** Credit-weighted average grade point needed this semester to reach `target` cumulative GPA. */
+export function requiredSemesterGpa(past: LCourse[], current: LCourse[], target: number): RequiredSemesterGpa {
+  const pastRes = gpaOf(past)
+  const pastPoints = pastRes.gpa !== null ? pastRes.gpa * pastRes.credits : 0
+
+  let curCredits = 0
+  let maxPoints = 0
+  let minPoints = 0
+  for (const c of current) {
+    if (isSU(c)) continue
+    const cr = Number(c.credits) || 0
+    if (cr <= 0) continue
+    const pts = scaleOf(c)
+      .map((b) => (b.grade_point !== '' ? Number(b.grade_point) : NaN))
+      .filter((n) => Number.isFinite(n))
+    const hi = pts.length > 0 ? Math.max(...pts) : 4
+    const lo = pts.length > 0 ? Math.min(...pts) : 0
+    curCredits += cr
+    maxPoints += hi * cr
+    minPoints += lo * cr
+  }
+
+  if (curCredits <= 0) {
+    const secured = pastRes.gpa !== null && pastRes.gpa >= target - 1e-9
+    return { needed: null, status: secured ? 'secured' : 'impossible' }
+  }
+
+  const totalCredits = pastRes.credits + curCredits
+  const max = maxPoints / curCredits
+  const min = minPoints / curCredits
+  const rawNeeded = (target * totalCredits - pastPoints) / curCredits
+
+  if (rawNeeded <= Math.max(0, min) + 1e-9) {
+    return { needed: Math.max(0, rawNeeded), status: 'secured' }
+  }
+  if (rawNeeded > max + 1e-9) {
+    return { needed: rawNeeded, status: 'impossible' }
+  }
+  return { needed: rawNeeded, status: 'possible' }
+}
+
 /* ------------------------------------------------------------------ */
 /* Semesters                                                           */
 /* ------------------------------------------------------------------ */
