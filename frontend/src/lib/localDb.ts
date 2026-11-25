@@ -73,6 +73,13 @@ export interface LTopic {
   review_count: number
 }
 
+export interface LCourseQuestion {
+  id: number
+  text: string
+  created_at: string
+  answered: boolean
+}
+
 export interface LCourse {
   id: number
   code: string
@@ -97,6 +104,9 @@ export interface LCourse {
   attendance?: LAttendance[]
   /** Study topics / chapters for retrospective revision tracking. */
   topics?: LTopic[]
+  instructor_email?: string | null
+  office_hours?: string | null
+  questions?: LCourseQuestion[]
 }
 
 export const isSU = (c: Pick<LCourse, 'grading'>) => c.grading === 'SU'

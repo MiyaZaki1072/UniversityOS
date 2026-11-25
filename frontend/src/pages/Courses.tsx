@@ -1,4 +1,17 @@
-import { ArrowLeft, CalendarClock, FileInput, MapPin, NotebookPen, Pencil, Plus, Trash2 } from 'lucide-react'
+import {
+  ArrowLeft,
+  CalendarCheck,
+  CalendarClock,
+  Check,
+  Clock,
+  FileInput,
+  ListChecks,
+  MapPin,
+  NotebookPen,
+  Pencil,
+  Plus,
+  Trash2,
+} from 'lucide-react'
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { Button } from '../components/ui/Button'
@@ -7,13 +20,14 @@ import { Modal } from '../components/ui/Overlay'
 import { EmptyState, PageHeader, RecordCard, SectionHeader } from '../components/ui/Panels'
 import { SelectField } from '../components/ui/SelectField'
 import { StatusStamp } from '../components/ui/StatusStamp'
-import { formatPercent, formatShortDate, formatTime, relativeDue } from '../lib/format'
+import { daysUntil, formatPercent, formatShortDate, formatTime, relativeDue } from '../lib/format'
 import { COURSE_COLORS } from '../lib/importConfig'
 import {
   addDays,
   attendanceSummary,
   courseSessions,
   DEFAULT_SCALE,
+  dueTopics,
   isSU,
   reviewTopic,
   setAttendance,
@@ -37,6 +51,7 @@ import { useAppData } from '../lib/store'
 
 export const WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
 const hhmm = (t: string) => t.slice(0, 5)
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 /** Next class of a course within the coming two weeks, as "Tue 09:00". */
 function nextClass(c: LCourse, semester: Parameters<typeof meetingActiveOn>[2]): string | null {
@@ -68,6 +83,8 @@ function CourseFormModal({ open, onClose, course }: { open: boolean; onClose: ()
     name: '',
     credits: '3',
     instructor: '',
+    instructorEmail: '',
+    officeHours: '',
     color: COURSE_COLORS[0],
     grading: 'LETTER' as 'LETTER' | 'SU',
     pass: '50',
@@ -85,6 +102,8 @@ function CourseFormModal({ open, onClose, course }: { open: boolean; onClose: ()
             name: course.name,
             credits: course.credits,
             instructor: course.instructor,
+            instructorEmail: course.instructor_email ?? '',
+            officeHours: course.office_hours ?? '',
             color: course.color,
             grading: isSU(course) ? 'SU' : 'LETTER',
             pass: isSU(course) ? suPassMark(course) : '50',
@@ -95,6 +114,8 @@ function CourseFormModal({ open, onClose, course }: { open: boolean; onClose: ()
             name: '',
             credits: '3',
             instructor: '',
+            instructorEmail: '',
+            officeHours: '',
             color: COURSE_COLORS[db.courses.length % COURSE_COLORS.length],
             grading: 'LETTER',
             pass: '50',
@@ -107,6 +128,8 @@ function CourseFormModal({ open, onClose, course }: { open: boolean; onClose: ()
     e?.preventDefault()
     const code = f.code.trim().toUpperCase()
     const attTrim = f.attendanceMin.trim()
+    const emailTrim = f.instructorEmail.trim()
+    const officeTrim = f.officeHours.trim()
     const errs: Record<string, string> = {}
     if (!code) errs.code = 'Required.'
     else if (db.courses.some((c) => c.code.toUpperCase() === code && c.id !== course?.id)) errs.code = `${code} already exists.`
@@ -115,6 +138,8 @@ function CourseFormModal({ open, onClose, course }: { open: boolean; onClose: ()
     if (Number.isNaN(Number(f.credits)) || Number(f.credits) < 0) errs.credits = 'Must be 0 or more.'
     if (f.grading === 'SU' && (f.pass === '' || Number.isNaN(Number(f.pass)) || Number(f.pass) < 0 || Number(f.pass) > 100)) errs.pass = '0 to 100.'
     if (attTrim !== '' && (Number.isNaN(Number(attTrim)) || Number(attTrim) < 0 || Number(attTrim) > 100)) errs.attendanceMin = '0 to 100.'
+    if (emailTrim !== '' && !EMAIL_RE.test(emailTrim)) errs.instructorEmail = 'Enter a valid email.'
+    if (officeTrim.length > 200) errs.officeHours = 'Keep under 200 characters.'
     setErrors(errs)
     if (Object.keys(errs).length) return
 
@@ -125,6 +150,8 @@ function CourseFormModal({ open, onClose, course }: { open: boolean; onClose: ()
         name: f.name.trim(),
         credits: f.credits || '0',
         instructor: f.instructor.trim(),
+        instructor_email: emailTrim === '' ? null : emailTrim,
+        office_hours: officeTrim === '' ? null : officeTrim,
         color: f.color,
         grading: f.grading,
         attendance_min_percent: attTrim === '' ? null : attTrim,
@@ -176,6 +203,24 @@ function CourseFormModal({ open, onClose, course }: { open: boolean; onClose: ()
         </div>
         <FormField label="Name" placeholder="Calculus I" value={f.name} error={errors.name} onChange={(e) => setF({ ...f, name: e.target.value })} />
         <FormField label="Instructor" placeholder="Optional" value={f.instructor} onChange={(e) => setF({ ...f, instructor: e.target.value })} />
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <FormField
+            label="Instructor email"
+            type="email"
+            placeholder="Optional"
+            value={f.instructorEmail}
+            error={errors.instructorEmail}
+            onChange={(e) => setF({ ...f, instructorEmail: e.target.value })}
+          />
+          <FormField
+            label="Office hours"
+            placeholder="e.g. Tue 13:00–15:00, Rm 1203"
+            maxLength={200}
+            value={f.officeHours}
+            error={errors.officeHours}
+            onChange={(e) => setF({ ...f, officeHours: e.target.value })}
+          />
+        </div>
         <div className="grid grid-cols-2 gap-4">
           <SelectField
             label="Grading"
@@ -367,6 +412,9 @@ function ExamFormModal({ open, onClose, courseId, exam }: { open: boolean; onClo
 export function CoursesPage() {
   const { db, openImport } = useAppData()
   const [formOpen, setFormOpen] = useState(false)
+  const now = new Date()
+  const nowMs = now.getTime()
+  const today = todayKey(now)
 
   return (
     <>
@@ -408,6 +456,32 @@ export function CoursesPage() {
           {db.courses.map((c) => {
             const s = standingFor(c)
             const next = nextClass(c, db.semester)
+            const att = attendanceSummary(c, db.semester, today)
+            const openTasks = db.tasks.filter((t) => t.course_id === c.id && t.status !== 'COMPLETED')
+            const overdueCount = openTasks.filter((t) => t.due_at !== null && Date.parse(t.due_at) < nowMs).length
+            const nextExam = [...c.exams]
+              .filter((e) => Date.parse(e.start_at) >= nowMs)
+              .sort((a, b) => Date.parse(a.start_at) - Date.parse(b.start_at))[0]
+            const examDays = nextExam ? Math.max(0, daysUntil(nextExam.start_at, now)) : null
+            const topicsDue = dueTopics([c], today).length
+            const hasRollups = att.total > 0 || openTasks.length > 0 || nextExam !== undefined || topicsDue > 0
+
+            const attTone =
+              att.status === 'over' ? 'text-danger' : att.status === 'close' ? 'text-mustard-ink' : ''
+            const attLeftText =
+              att.status === 'close' && att.canStillMiss !== null
+                ? ` · ${att.canStillMiss} left`
+                : att.status === 'over' && att.canStillMiss !== null
+                  ? ` · ${Math.abs(att.canStillMiss)} over`
+                  : ''
+            const examTone =
+              examDays !== null && examDays <= 3
+                ? 'text-danger'
+                : examDays !== null && examDays <= 7
+                  ? 'text-mustard-ink'
+                  : ''
+            const examLabel = nextExam?.event_type === 'QUIZ' ? 'Quiz' : 'Exam'
+
             return (
               <Link key={c.id} to={`/courses/${c.id}`} className="block group">
                 <RecordCard indicator={c.color} className="h-full p-4 pl-6 flex flex-col gap-3 group-hover:border-border-strong">
@@ -421,16 +495,48 @@ export function CoursesPage() {
                       {Number(c.credits)} cr{isSU(c) && ' · S/U'}
                     </span>
                   </div>
-                  <div className="mt-auto flex flex-wrap items-center gap-x-4 gap-y-1 tabular text-[12px] text-ink-muted">
-                    <span className="inline-flex items-center gap-1.5">
-                      <CalendarClock size={13} aria-hidden="true" />
-                      {next ?? 'No upcoming class'}
-                    </span>
-                    <span className="inline-flex items-center gap-1.5">
-                      <NotebookPen size={13} aria-hidden="true" />
-                      {s.current_grade === null ? 'Ungraded' : `${formatPercent(s.current_grade)}%`}
-                      {s.projected_letter_grade && ` · ${s.letter_grade ?? s.projected_letter_grade}`}
-                    </span>
+                  <div className="mt-auto flex flex-col gap-2">
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 tabular text-[12px] text-ink-muted">
+                      <span className="inline-flex items-center gap-1.5">
+                        <CalendarClock size={13} aria-hidden="true" />
+                        {next ?? 'No upcoming class'}
+                      </span>
+                      <span className="inline-flex items-center gap-1.5">
+                        <NotebookPen size={13} aria-hidden="true" />
+                        {s.current_grade === null ? 'Ungraded' : `${formatPercent(s.current_grade)}%`}
+                        {s.projected_letter_grade && ` · ${s.letter_grade ?? s.projected_letter_grade}`}
+                      </span>
+                    </div>
+                    {hasRollups && (
+                      <div className="pt-2 border-t border-rule flex flex-wrap items-center gap-x-3 gap-y-1 tabular text-[11.5px] text-ink-muted">
+                        {att.total > 0 && (
+                          <span className={`inline-flex items-center gap-1 ${attTone}`}>
+                            <CalendarCheck size={12} aria-hidden="true" />
+                            Att {att.percent === null ? '—' : `${Math.round(att.percent)}%`}
+                            {attLeftText}
+                          </span>
+                        )}
+                        {openTasks.length > 0 && (
+                          <span className="inline-flex items-center gap-1">
+                            <ListChecks size={12} aria-hidden="true" />
+                            <span>{openTasks.length} open</span>
+                            {overdueCount > 0 && <span className="text-danger">· {overdueCount} overdue</span>}
+                          </span>
+                        )}
+                        {nextExam && examDays !== null && (
+                          <span className={`inline-flex items-center gap-1 ${examTone}`}>
+                            <Clock size={12} aria-hidden="true" />
+                            {examDays === 0 ? `${examLabel} today` : `${examLabel} in ${examDays}d`}
+                          </span>
+                        )}
+                        {topicsDue > 0 && (
+                          <span className="inline-flex items-center gap-1">
+                            <NotebookPen size={12} aria-hidden="true" />
+                            {topicsDue} to revise
+                          </span>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </RecordCard>
               </Link>
@@ -474,6 +580,7 @@ export function CourseDetailPage() {
   const [bulkInput, setBulkInput] = useState('')
   const [editingTopicId, setEditingTopicId] = useState<number | null>(null)
   const [editingTopicTitle, setEditingTopicTitle] = useState('')
+  const [questionInput, setQuestionInput] = useState('')
 
   useEffect(() => {
     setShowAllSessions(false)
@@ -482,6 +589,7 @@ export function CourseDetailPage() {
     setBulkInput('')
     setEditingTopicId(null)
     setEditingTopicTitle('')
+    setQuestionInput('')
   }, [id])
 
   const today = todayKey()
@@ -632,9 +740,42 @@ export function CourseDetailPage() {
     if (editingTopicId === t.id) setEditingTopicId(null)
   }
 
+  const addQuestion = (e: FormEvent) => {
+    e.preventDefault()
+    const text = questionInput.trim()
+    if (!text) return
+    mutate((d, nid) => {
+      const c = d.courses.find((x) => x.id === course.id)
+      if (!c) return
+      c.questions ??= []
+      c.questions.push({ id: nid(), text, created_at: new Date().toISOString(), answered: false })
+    })
+    setQuestionInput('')
+  }
+
+  const toggleQuestion = (questionId: number) => {
+    mutate((d) => {
+      const c = d.courses.find((x) => x.id === course.id)
+      const q = c?.questions?.find((x) => x.id === questionId)
+      if (q) q.answered = !q.answered
+    })
+  }
+
+  const removeQuestion = (questionId: number) => {
+    mutate((d) => {
+      const c = d.courses.find((x) => x.id === course.id)
+      if (c && c.questions) c.questions = c.questions.filter((x) => x.id !== questionId)
+    })
+  }
+
   const s = standingFor(course)
   const topics = course.topics ?? []
   const visibleSessions = showAllSessions ? heldSessions : heldSessions.slice(0, 10)
+  const sortedQuestions = [...(course.questions ?? [])].sort((a, b) => Number(a.answered) - Number(b.answered))
+  const openQuestionsCount = sortedQuestions.filter((q) => !q.answered).length
+  const instructorEmail = course.instructor_email?.trim() ?? ''
+  const validInstructorEmail = instructorEmail !== '' && EMAIL_RE.test(instructorEmail)
+  const officeHours = course.office_hours?.trim() ?? ''
 
   return (
     <>
@@ -1081,6 +1222,93 @@ export function CourseDetailPage() {
           <RecordCard>
             <SectionHeader
               index="05"
+              title="Instructor"
+              meta={
+                openQuestionsCount > 0
+                  ? `${openQuestionsCount} open ${openQuestionsCount === 1 ? 'question' : 'questions'}`
+                  : undefined
+              }
+            />
+            <div className="px-4 sm:px-5 py-4 flex flex-col gap-2">
+              {course.instructor && <div className="font-medium text-ink">{course.instructor}</div>}
+              {validInstructorEmail && (
+                <a href={`mailto:${instructorEmail}`} className="text-[13px] text-accent-strong hover:underline break-all">
+                  {instructorEmail}
+                </a>
+              )}
+              {officeHours && (
+                <div className="flex items-start gap-1.5 text-[13px] text-ink-muted">
+                  <Clock size={13} className="mt-1 shrink-0" aria-hidden="true" />
+                  <span className="break-words">{officeHours}</span>
+                </div>
+              )}
+              {!validInstructorEmail && !officeHours && (
+                <p className="text-[13px] text-ink-muted">Add the instructor&apos;s email and office hours with Edit.</p>
+              )}
+            </div>
+
+            <div className="border-t border-rule px-4 sm:px-5 py-3 flex flex-col gap-3">
+              <div className="flex items-center justify-between gap-2">
+                <span className="micro">Questions to ask</span>
+                {openQuestionsCount > 0 && (
+                  <span className="sm:hidden tabular text-[11.5px] text-ink-muted">{openQuestionsCount} open</span>
+                )}
+              </div>
+              <form onSubmit={addQuestion} className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={questionInput}
+                  onChange={(e) => setQuestionInput(e.target.value)}
+                  placeholder="Add a question for class or office hours..."
+                  aria-label="New question to ask"
+                  className="h-9 flex-1 min-w-0 px-2.5 bg-surface-sunken border border-border-strong rounded-xs text-[14px] text-ink placeholder:text-ink-faint focus:outline-none focus:border-accent"
+                />
+                <Button type="submit" size="sm" variant="secondary" icon={<Plus size={14} />} disabled={!questionInput.trim()}>
+                  Add
+                </Button>
+              </form>
+              {sortedQuestions.length === 0 ? (
+                <p className="text-[12.5px] text-ink-muted">No questions on file yet.</p>
+              ) : (
+                <ul className="divide-y divide-rule -mx-4 sm:-mx-5 border-t border-rule">
+                  {sortedQuestions.map((q) => (
+                    <li key={q.id} className="flex items-start gap-3 px-4 sm:px-5 py-2.5">
+                      <button
+                        type="button"
+                        onClick={() => toggleQuestion(q.id)}
+                        aria-pressed={q.answered}
+                        aria-label={q.answered ? `Mark "${q.text}" unanswered` : `Mark "${q.text}" answered`}
+                        className={`mt-0.5 w-5 h-5 shrink-0 grid place-items-center border-[1.5px] rounded-xs cursor-pointer ${
+                          q.answered ? 'bg-sage border-sage text-bg' : 'border-border-strong hover:border-accent'
+                        }`}
+                      >
+                        {q.answered && <Check size={14} strokeWidth={3} />}
+                      </button>
+                      <span
+                        className={`min-w-0 flex-1 text-[13.5px] leading-snug break-words ${
+                          q.answered ? 'text-ink-muted line-through' : 'text-ink'
+                        }`}
+                      >
+                        {q.text}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => removeQuestion(q.id)}
+                        className="p-1 text-ink-muted hover:text-danger shrink-0 cursor-pointer"
+                        aria-label={`Delete question "${q.text}"`}
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </RecordCard>
+
+          <RecordCard>
+            <SectionHeader
+              index="06"
               title="Open tasks"
               meta={`${tasks.length}`}
               action={
@@ -1105,7 +1333,7 @@ export function CourseDetailPage() {
 
           {links.length > 0 && (
             <RecordCard>
-              <SectionHeader index="06" title="Links" />
+              <SectionHeader index="07" title="Links" />
               <ul className="divide-y divide-rule">
                 {links.map((r) => (
                   <li key={r.id} className="px-4 sm:px-5 py-2.5">
