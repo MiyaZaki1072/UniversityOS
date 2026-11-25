@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 import { CheckCircle2, Clock, Flame, Target } from 'lucide-react'
 import { EmptyState, PageHeader, RecordCard, SectionHeader, StatCard } from '../components/ui/Panels'
 import { formatMinutes } from '../lib/format'
-import { addDays, habitStreak, sessionMinutes, standingFor, todayKey, weekStart, type LocalDB } from '../lib/localDb'
+import { addDays, guessAccuracy, habitStreak, sessionMinutes, standingFor, todayKey, weekStart, type GuessAccuracy, type LocalDB } from '../lib/localDb'
 import { useAppData } from '../lib/store'
 import { GradeStandingTable } from './dashboard/GradeStandingTable'
 
@@ -25,6 +25,7 @@ interface Report {
   tasks: { completed: number; open: number; overdue: number; onTime: number; late: number; doneRate: number | null }
   habits: { overall: number | null; rows: { id: number; name: string; pct: number | null; streak: number }[] }
   weightedAvg: number | null
+  accuracy: GuessAccuracy
   empty: boolean
 }
 
@@ -116,6 +117,8 @@ function buildReport(db: LocalDB, now: Date): Report {
     }
   }
 
+  const accuracy = guessAccuracy([...db.courses, ...db.pastSemesters.flatMap((s) => s.courses)])
+
   return {
     start,
     end,
@@ -133,7 +136,8 @@ function buildReport(db: LocalDB, now: Date): Report {
     },
     habits: { overall: pct(doneAll, possibleAll), rows: habitRows },
     weightedAvg: credits > 0 ? sum / credits : null,
-    empty: db.courses.length === 0 && db.studySessions.length === 0 && db.habits.length === 0 && db.tasks.length === 0,
+    accuracy,
+    empty: db.courses.length === 0 && db.studySessions.length === 0 && db.habits.length === 0 && db.tasks.length === 0 && accuracy.count === 0,
   }
 }
 
@@ -334,6 +338,49 @@ export function AnalyticsPage() {
                 )}
               </p>
             </div>
+          )}
+        </RecordCard>
+
+        <RecordCard>
+          <SectionHeader index="05" title="Guess accuracy" meta="All semesters" />
+          {r.accuracy.count === 0 ? (
+            <EmptyState
+              title="No guesses compared yet"
+              body="Add an expected score before a result comes out, then the real score, to see how good your guesses are."
+            />
+          ) : (
+            (() => {
+              const meanGap = r.accuracy.meanGap ?? 0
+              const meanAbsGap = r.accuracy.meanAbsGap ?? 0
+              const roundedGap = Math.abs(meanGap) < 0.05 ? 0 : meanGap
+              const signedGap = `${roundedGap >= 0 ? '+' : ''}${roundedGap.toFixed(1)} pts`
+              const gapTone = meanGap >= 0 ? 'text-sage-ink' : meanGap < -5 ? 'text-danger' : 'text-ink'
+              const summaryLine =
+                roundedGap === 0
+                  ? 'Your guesses are right on average.'
+                  : roundedGap > 0
+                    ? `You usually score ${roundedGap.toFixed(1)} pts above your guesses.`
+                    : `You usually score ${Math.abs(roundedGap).toFixed(1)} pts below your guesses.`
+              return (
+                <div className="px-4 sm:px-5 py-4 flex flex-col gap-4">
+                  <dl className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div>
+                      <dt className="micro">Items compared</dt>
+                      <dd className="tabular text-xl text-ink mt-1">{r.accuracy.count}</dd>
+                    </div>
+                    <div>
+                      <dt className="micro">Mean gap</dt>
+                      <dd className={`tabular text-xl mt-1 ${gapTone}`}>{signedGap}</dd>
+                    </div>
+                    <div>
+                      <dt className="micro">Mean abs gap</dt>
+                      <dd className="tabular text-xl text-ink mt-1">{meanAbsGap.toFixed(1)} pts</dd>
+                    </div>
+                  </dl>
+                  <p className="text-[13px] text-ink-muted">{summaryLine}</p>
+                </div>
+              )
+            })()
           )}
         </RecordCard>
 

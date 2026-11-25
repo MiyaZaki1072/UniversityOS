@@ -5,7 +5,21 @@ import { Button } from '../components/ui/Button'
 import { EmptyState, PageHeader, RecordCard, SectionHeader } from '../components/ui/Panels'
 import { StatusStamp } from '../components/ui/StatusStamp'
 import { formatPercent } from '../lib/format'
-import { DEFAULT_SCALE, fromLocalInput, isSU, standingFor, requiredForBands, suPassMark, suScale, toLocalInput, weightTotal, type LCourse } from '../lib/localDb'
+import {
+  DEFAULT_SCALE,
+  expectedStanding,
+  fromLocalInput,
+  guessAccuracy,
+  gutCheck,
+  isSU,
+  requiredForBands,
+  standingFor,
+  suPassMark,
+  suScale,
+  toLocalInput,
+  weightTotal,
+  type LCourse,
+} from '../lib/localDb'
 import { useAppData, type Recipe } from '../lib/store'
 import { GradeStandingTable } from './dashboard/GradeStandingTable'
 
@@ -25,6 +39,11 @@ function Cell({ invalid, className = '', ...rest }: InputHTMLAttributes<HTMLInpu
 
 /** Numeric cell value → stored decimal string ('' stays as is so typing works). */
 const num = (v: string) => v.trim()
+
+const fmtSignedPts = (gap: number) => {
+  const rounded = Math.abs(gap) < 0.05 ? 0 : gap
+  return `${rounded >= 0 ? '+' : ''}${rounded.toFixed(1)} pts`
+}
 
 export function GradebookPage() {
   const { db, data } = useAppData()
@@ -100,6 +119,26 @@ export function GradebookCoursePage() {
   const nextBandLabel =
     currentMin === undefined ? undefined : [...needBands].reverse().find((b) => b.minimum > currentMin)?.label
 
+  const exp = expectedStanding(course)
+  const gut = gutCheck(course)
+  const acc = guessAccuracy([course])
+  const activeScale = course.scale.length ? course.scale : isSU(course) ? suScale('50') : DEFAULT_SCALE
+  const scaleLabels = activeScale.map((b) => b.grade_label).filter((l) => l.trim() !== '')
+  const currentGut = course.expected_grade?.trim() || ''
+  const gutOptions = currentGut && !scaleLabels.includes(currentGut) ? [currentGut, ...scaleLabels] : scaleLabels
+  const expBandMin =
+    exp.letter !== null
+      ? activeScale.find((b) => b.grade_label.trim().toUpperCase() === exp.letter!.trim().toUpperCase())?.minimum_percentage
+      : undefined
+  const gutComparison =
+    gut && exp.letter && gut.label.trim().toUpperCase() !== exp.letter.trim().toUpperCase() && expBandMin !== undefined
+      ? Number(expBandMin) < gut.minimum
+        ? `Your scores point to ${exp.letter}, below your ${gut.label} feeling.`
+        : Number(expBandMin) > gut.minimum
+          ? `Your scores point to ${exp.letter}, above your ${gut.label} feeling.`
+          : null
+      : null
+
   const scaleMins = course.scale.map((b) => Number(b.minimum_percentage))
   const scaleIssue =
     course.scale.length === 0
@@ -170,9 +209,10 @@ export function GradebookCoursePage() {
                 </div>
 
                 {g.assessments.length > 0 && (
-                  <div className="hidden sm:grid grid-cols-[1fr_88px_88px_170px_32px] gap-2 px-5 pt-2 micro">
+                  <div className="hidden sm:grid grid-cols-[1fr_88px_88px_88px_170px_32px] gap-2 px-5 pt-2 micro">
                     <span>Item</span>
                     <span className="text-right">Score</span>
+                    <span className="text-right">Expect</span>
                     <span className="text-right">Max</span>
                     <span>Due</span>
                     <span />
@@ -180,17 +220,28 @@ export function GradebookCoursePage() {
                 )}
                 <ul className="divide-y divide-rule">
                   {g.assessments.map((a, ai) => {
-                    const over = a.points_earned !== null && a.points_earned !== '' && Number(a.points_earned) > Number(a.points_possible)
-                    const badMax = a.points_possible === '' || Number(a.points_possible) <= 0
+                    const maxNum = Number(a.points_possible)
+                    const hasEarned = a.points_earned !== null && a.points_earned !== '' && Number.isFinite(Number(a.points_earned))
+                    const hasExpected =
+                      a.points_expected !== undefined &&
+                      a.points_expected !== null &&
+                      a.points_expected !== '' &&
+                      Number.isFinite(Number(a.points_expected))
+                    const over = hasEarned && Number(a.points_earned) > maxNum
+                    const overExpected = hasExpected && Number(a.points_expected) > maxNum
+                    const badMax = a.points_possible === '' || maxNum <= 0
+                    const itemGap =
+                      hasEarned && hasExpected && maxNum > 0 ? ((Number(a.points_earned) - Number(a.points_expected)) / maxNum) * 100 : null
+                    const itemGapTone = itemGap === null ? '' : itemGap >= 0 ? 'text-sage-ink' : itemGap < -5 ? 'text-danger' : 'text-ink-muted'
                     return (
-                      <li key={a.id} className="grid grid-cols-[1fr_auto] sm:grid-cols-[1fr_88px_88px_170px_32px] gap-2 items-center px-4 sm:px-5 py-2">
+                      <li key={a.id} className="grid grid-cols-[1fr_auto] sm:grid-cols-[1fr_88px_88px_88px_170px_32px] gap-2 items-center px-4 sm:px-5 py-2">
                         <Cell
                           aria-label="Item title"
                           value={a.title}
                           onChange={(e) => edit((c) => (c.categories[gi].assessments[ai].title = e.target.value))}
                           className="col-span-2 sm:col-span-1"
                         />
-                        <div className="flex items-center gap-2 sm:contents">
+                        <div className="flex items-center gap-1.5 sm:contents min-w-0">
                           <Cell
                             aria-label={`${a.title} score`}
                             type="number"
@@ -203,9 +254,23 @@ export function GradebookCoursePage() {
                             onChange={(e) =>
                               edit((c) => (c.categories[gi].assessments[ai].points_earned = e.target.value.trim() === '' ? null : num(e.target.value)))
                             }
-                            className="w-20 sm:w-full tabular text-right"
+                            className="order-1 sm:order-none w-16 px-1.5 sm:px-2 sm:w-full tabular text-right"
                           />
-                          <span className="sm:hidden text-ink-muted">/</span>
+                          <span className="sm:hidden order-2 text-ink-muted">/</span>
+                          <Cell
+                            aria-label={`${a.title} expected score`}
+                            type="number"
+                            min={0}
+                            step="0.01"
+                            placeholder="—"
+                            value={a.points_expected ?? ''}
+                            invalid={overExpected}
+                            title="Your guess before the result is out"
+                            onChange={(e) =>
+                              edit((c) => (c.categories[gi].assessments[ai].points_expected = e.target.value.trim() === '' ? null : num(e.target.value)))
+                            }
+                            className="order-5 sm:order-none w-16 px-1.5 sm:px-2 sm:w-full tabular text-right"
+                          />
                           <Cell
                             aria-label={`${a.title} maximum`}
                             type="number"
@@ -214,8 +279,9 @@ export function GradebookCoursePage() {
                             value={a.points_possible}
                             invalid={badMax}
                             onChange={(e) => edit((c) => (c.categories[gi].assessments[ai].points_possible = num(e.target.value)))}
-                            className="w-20 sm:w-full tabular text-right"
+                            className="order-3 sm:order-none w-16 px-1.5 sm:px-2 sm:w-full tabular text-right"
                           />
+                          <span className="sm:hidden order-4 text-ink-muted text-[11px] shrink-0">· exp</span>
                           <Cell
                             aria-label={`${a.title} due`}
                             type="datetime-local"
@@ -231,6 +297,11 @@ export function GradebookCoursePage() {
                         >
                           <Trash2 size={16} />
                         </button>
+                        {itemGap !== null && (
+                          <div className="col-span-2 sm:col-span-6 text-[11.5px] tabular text-ink-muted -mt-0.5">
+                            guess {a.points_expected} · <span className={itemGapTone}>{fmtSignedPts(itemGap)}</span>
+                          </div>
+                        )}
                       </li>
                     )
                   })}
@@ -247,6 +318,7 @@ export function GradebookCoursePage() {
                           title: `${g.name} ${g.assessments.length + 1}`,
                           points_possible: '100',
                           points_earned: null,
+                          points_expected: null,
                           due_at: null,
                         }),
                       )
@@ -302,6 +374,76 @@ export function GradebookCoursePage() {
                 {ungradedWeight}% of the weight is not graded yet; the current grade covers graded work only.
               </p>
             )}
+          </RecordCard>
+
+          <RecordCard>
+            <SectionHeader index="E" title="My expectations" />
+            <div className="px-4 sm:px-5 py-4 flex flex-col gap-3">
+              <label className="flex items-center justify-between gap-3">
+                <span className="text-[13px] text-ink-muted">I think I&apos;ll get</span>
+                <select
+                  value={currentGut}
+                  onChange={(e) => edit((c) => (c.expected_grade = e.target.value || null))}
+                  className="h-9 px-2.5 bg-surface border border-border rounded-xs text-ink tabular focus:outline-none focus:border-accent"
+                >
+                  <option value="">—</option>
+                  {gutOptions.map((l) => (
+                    <option key={l} value={l}>
+                      {l}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <div className="flex flex-col gap-1.5 pt-2 border-t border-rule">
+                <span className="micro">If your guesses are right</span>
+                {exp.percent === null ? (
+                  <p className="text-[12.5px] text-ink-muted">Add an expected score to an open item to see where you&apos;d land.</p>
+                ) : (
+                  <>
+                    <div className="flex items-baseline gap-2.5">
+                      <span className="tabular text-[26px] leading-none text-ink">{formatPercent(String(exp.percent))}%</span>
+                      {exp.letter && <span className="font-display text-2xl font-semibold text-accent-strong">{exp.letter}</span>}
+                    </div>
+                    {!exp.complete ? (
+                      <p className="text-[12.5px] text-ink-muted">
+                        {total !== 100
+                          ? 'Set weights to 100% for a full final-grade prediction.'
+                          : exp.openItems > exp.guessedItems
+                            ? `Based on ${exp.guessedItems} of ${exp.openItems} open ${exp.openItems === 1 ? 'item' : 'items'} — add guesses to the rest for a full prediction.`
+                            : 'Add items to empty categories for a full prediction.'}
+                      </p>
+                    ) : (
+                      <p className="text-[12.5px] text-ink-muted">
+                        {exp.openItems === 0 ? 'Everything is graded — matches your final score.' : 'Full prediction across all items.'}
+                      </p>
+                    )}
+                  </>
+                )}
+              </div>
+
+              {gut && (
+                <div className="flex flex-col gap-1 pt-2 border-t border-rule">
+                  {gut.status === 'secured' && <p className="text-[12.5px] text-sage-ink">{gut.label} is already secured.</p>}
+                  {gut.status === 'possible' && gut.required !== null && (
+                    <p className="text-[12.5px] text-ink-muted">
+                      For <span className="text-ink font-medium">{gut.label}</span> you need about{' '}
+                      <span className="tabular text-ink">{formatPercent(String(gut.required), 1)}%</span> on everything left.
+                    </p>
+                  )}
+                  {gut.status === 'impossible' && <p className="text-[12.5px] text-danger">{gut.label} is out of reach now.</p>}
+                  {gut.status === null && <p className="text-[12.5px] text-ink-muted">Set weights to 100% to check this.</p>}
+                  {gutComparison && <p className="text-[12.5px] text-ink-muted">{gutComparison}</p>}
+                </div>
+              )}
+
+              {acc.count > 0 && acc.meanAbsGap !== null && acc.meanGap !== null && (
+                <p className="text-[12.5px] text-ink-muted pt-2 border-t border-rule">
+                  Your guesses here are off by <span className="tabular text-ink">{acc.meanAbsGap.toFixed(1)} pts</span> on average (
+                  {Math.abs(acc.meanGap) < 0.05 ? 'right on target overall' : acc.meanGap > 0 ? 'you score higher' : 'you score lower'}).
+                </p>
+              )}
+            </div>
           </RecordCard>
 
           <RecordCard>

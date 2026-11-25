@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { Button } from '../components/ui/Button'
 import { Modal } from '../components/ui/Overlay'
 import { EmptyState, PageHeader, RecordCard, SectionHeader, StatCard } from '../components/ui/Panels'
-import { archiveCurrentSemester, courseGrade, DEFAULT_SCALE, gpaOf, type LArchivedSemester, type LCourse } from '../lib/localDb'
+import { archiveCurrentSemester, courseGrade, DEFAULT_SCALE, expectedGpaOf, gpaOf, type LArchivedSemester, type LCourse } from '../lib/localDb'
 import { useAppData } from '../lib/store'
 
 const fmtGpa = (g: number | null) => (g === null ? '—' : g.toFixed(2))
@@ -34,6 +34,9 @@ function CourseRows({ courses, onGrade }: { courses: LCourse[]; onGrade: (course
                 {g.point !== null && <span className="text-ink-muted text-[12px]"> · {g.point.toFixed(2)}</span>}
               </div>
               <div className="micro text-ink-faint">{g.su ? `S/U · not in GPA${g.source ? ` · ${g.source}` : ''}` : g.source ?? 'no grade'}</div>
+              {g.point === 0 && g.letter && g.letter.trim().toUpperCase() !== 'F' && (
+                <div className="text-[11.5px] text-danger">{g.letter} is worth 0 points on this course&apos;s scale. Fix it in the Gradebook.</div>
+              )}
             </div>
             <label className="flex items-center gap-2 shrink-0">
               <span className="micro">Official grade</span>
@@ -106,6 +109,7 @@ export function SemestersPage() {
   const [finishing, setFinishing] = useState(false)
 
   const current = gpaOf(db.courses)
+  const expected = expectedGpaOf(db.courses)
   const all = gpaOf([...db.pastSemesters.flatMap((s) => s.courses), ...db.courses])
   const past = [...db.pastSemesters].sort(
     (a, b) => b.end_date.localeCompare(a.end_date) || b.archived_on.localeCompare(a.archived_on) || b.id - a.id,
@@ -144,8 +148,9 @@ export function SemestersPage() {
       />
 
       <div className="flex flex-col gap-4 lg:gap-5">
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           <StatCard label="Current semester GPA" value={fmtGpa(current.gpa)} detail="Projected" tone="accent" />
+          <StatCard label="Expected semester GPA" value={fmtGpa(expected.gpa)} detail="If your expectations come true" tone="mustard" />
           <StatCard label="Cumulative GPA" value={fmtGpa(all.gpa)} detail="Past semesters and current" tone="mustard" />
           <StatCard label="Credits counted" value={all.credits} unit="cr" detail={`${all.counted} courses`} tone="sage" />
         </div>

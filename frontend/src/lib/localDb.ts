@@ -28,6 +28,7 @@ export interface LAssessment {
   title: string
   points_possible: string
   points_earned: string | null
+  points_expected?: string | null
   due_at: string | null
 }
 
@@ -68,6 +69,8 @@ export interface LCourse {
   resources: LResource[]
   /** Letter the university actually gave (e.g. "B+"). Overrides the computed letter for GPA. */
   official_grade?: string | null
+  /** Gut-feel letter from the course's scale (e.g. "B+"). */
+  expected_grade?: string | null
   /** LETTER (default) or SU: satisfactory/unsatisfactory, never counted in GPA. */
   grading?: 'LETTER' | 'SU'
 }
@@ -361,6 +364,61 @@ export function standingFor(c: LCourse): GradeStanding {
 const scaleOf = (c: LCourse) =>
   [...(c.scale.length ? c.scale : DEFAULT_SCALE)].sort((a, b) => Number(b.minimum_percentage) - Number(a.minimum_percentage))
 
+const hasNum = (v: string | null | undefined): v is string =>
+  v !== undefined && v !== null && v.trim() !== '' && Number.isFinite(Number(v))
+
+export interface ExpectedStanding {
+  percent: number | null
+  letter: string | null
+  complete: boolean
+  guessedItems: number
+  openItems: number
+}
+
+/** Final standing if real scores stand and expected scores come true for open items. */
+export function expectedStanding(c: LCourse): ExpectedStanding {
+  let contribution = 0
+  let usedWeight = 0
+  let openItems = 0
+  let guessedItems = 0
+
+  for (const g of c.categories) {
+    let earned = 0
+    let possible = 0
+    for (const a of g.assessments) {
+      const graded = hasNum(a.points_earned)
+      const guessed = hasNum(a.points_expected)
+      if (!graded) {
+        openItems++
+        if (guessed) guessedItems++
+      }
+      const max = Number(a.points_possible)
+      if (!(max > 0)) continue
+      if (graded) {
+        earned += Number(a.points_earned)
+        possible += max
+      } else if (guessed) {
+        earned += Math.max(0, Math.min(max, Number(a.points_expected)))
+        possible += max
+      }
+    }
+    if (possible <= 0) continue
+    contribution += (earned / possible) * Number(g.weight_percent)
+    usedWeight += Number(g.weight_percent)
+  }
+
+  const percent = usedWeight > 0 ? (contribution / usedWeight) * 100 : null
+  const validWeights = c.categories.length > 0 && weightTotal(c) === 100
+  const letter =
+    validWeights && percent !== null
+      ? (scaleOf(c).find((b) => percent >= Number(b.minimum_percentage))?.grade_label ?? null)
+      : null
+  const complete =
+    validWeights && percent !== null && c.categories.every((g) => g.assessments.length > 0) && guessedItems === openItems
+
+  return { percent, letter, complete, guessedItems, openItems }
+}
+
 export interface CourseGrade {
   letter: string | null
   /** Grade point of that letter on the course's scale; null if unknown or S/U. */
@@ -368,7 +426,7 @@ export interface CourseGrade {
   credits: number
   /** S/U course: shown, but never counted in GPA. */
   su: boolean
-  source: 'official' | 'final' | 'projected' | null
+  source: 'official' | 'expected' | 'final' | 'projected' | null
 }
 
 /** The letter that counts for GPA: official grade if entered, else final, else projected. */
@@ -386,19 +444,69 @@ export function courseGrade(c: LCourse): CourseGrade {
   return { letter, point, credits, source, su }
 }
 
-/** Credit-weighted GPA over courses with a known grade point and credits > 0. */
-export function gpaOf(courses: LCourse[]): { gpa: number | null; credits: number; counted: number } {
+/** Expected course grade: official → final → gut-feel expected_grade → expected standing → projected. */
+export function expectedCourseGrade(c: LCourse): CourseGrade {
+  const credits = Number(c.credits) || 0
+  const scale = scaleOf(c)
+  const bandFor = (l: string | null) => (l ? scale.find((b) => b.grade_label.trim().toUpperCase() === l.trim().toUpperCase()) : undefined)
+  const official = bandFor(c.official_grade?.trim() || null) ? c.official_grade!.trim() : null
+  const gutBand = bandFor(c.expected_grade?.trim() || null)
+  const gut = gutBand ? gutBand.grade_label : null
+  const exp = expectedStanding(c)
+  const expLetter = exp.guessedItems > 0 ? exp.letter : null
+  const s = standingFor(c)
+
+  let letter: string | null
+  let source: CourseGrade['source']
+  if (official) {
+    letter = official
+    source = 'official'
+  } else if (s.letter_grade) {
+    // Everything is graded: the real final letter beats any guess.
+    letter = s.letter_grade
+    source = 'final'
+  } else if (gut) {
+    letter = gut
+    source = 'expected'
+  } else if (expLetter) {
+    letter = expLetter
+    source = 'expected'
+  } else if (s.projected_letter_grade) {
+    letter = s.projected_letter_grade
+    source = 'projected'
+  } else {
+    letter = null
+    source = null
+  }
+
+  const band = bandFor(letter)
+  const su = isSU(c)
+  const point = !su && band && band.grade_point !== '' ? Number(band.grade_point) : null
+  return { letter, point, credits, source, su }
+}
+
+function computeGpa(courses: LCourse[], gradeOf: (c: LCourse) => CourseGrade): { gpa: number | null; credits: number; counted: number } {
   let points = 0
   let credits = 0
   let counted = 0
   for (const c of courses) {
-    const g = courseGrade(c)
+    const g = gradeOf(c)
     if (g.point === null || g.credits <= 0) continue
     points += g.point * g.credits
     credits += g.credits
     counted++
   }
   return { gpa: credits > 0 ? points / credits : null, credits, counted }
+}
+
+/** Credit-weighted GPA over courses with a known grade point and credits > 0. */
+export function gpaOf(courses: LCourse[]): { gpa: number | null; credits: number; counted: number } {
+  return computeGpa(courses, courseGrade)
+}
+
+/** Credit-weighted GPA if expectations come true. */
+export function expectedGpaOf(courses: LCourse[]): { gpa: number | null; credits: number; counted: number } {
+  return computeGpa(courses, expectedCourseGrade)
 }
 
 export interface RequiredForBand {
@@ -441,6 +549,61 @@ export function requiredForBands(c: LCourse): { bands: RequiredForBand[]; remain
     return { label: b.grade_label, minimum, required: Math.max(0, need), status }
   })
   return { bands, remainingWeight: Math.round(slope * 100) / 100 }
+}
+
+export interface GutCheck {
+  label: string
+  minimum: number
+  required: number | null
+  status: RequiredForBand['status'] | null
+}
+
+/** Check how realistic the student's gut-feel letter grade is against remaining work. */
+export function gutCheck(c: LCourse): GutCheck | null {
+  const raw = c.expected_grade?.trim()
+  if (!raw) return null
+  const band = scaleOf(c).find((b) => b.grade_label.trim().toUpperCase() === raw.toUpperCase())
+  if (!band) return null
+  const need = requiredForBands(c)
+  if (!need) {
+    return { label: band.grade_label, minimum: Number(band.minimum_percentage), required: null, status: null }
+  }
+  const match = need.bands.find((b) => b.label.trim().toUpperCase() === raw.toUpperCase())
+  if (!match) {
+    return { label: band.grade_label, minimum: Number(band.minimum_percentage), required: null, status: null }
+  }
+  return { label: match.label, minimum: match.minimum, required: match.required, status: match.status }
+}
+
+export interface GuessAccuracy {
+  count: number
+  meanGap: number | null
+  meanAbsGap: number | null
+}
+
+/** Calibration across assessments that have both a real score and a guess (in percentage points). */
+export function guessAccuracy(courses: LCourse[]): GuessAccuracy {
+  let count = 0
+  let sumGap = 0
+  let sumAbs = 0
+  for (const c of courses) {
+    for (const g of c.categories) {
+      for (const a of g.assessments) {
+        if (!hasNum(a.points_earned) || !hasNum(a.points_expected)) continue
+        const max = Number(a.points_possible)
+        if (!(max > 0)) continue
+        const gap = ((Number(a.points_earned) - Number(a.points_expected)) / max) * 100
+        sumGap += gap
+        sumAbs += Math.abs(gap)
+        count++
+      }
+    }
+  }
+  return {
+    count,
+    meanGap: count > 0 ? sumGap / count : null,
+    meanAbsGap: count > 0 ? sumAbs / count : null,
+  }
 }
 
 /* ------------------------------------------------------------------ */
