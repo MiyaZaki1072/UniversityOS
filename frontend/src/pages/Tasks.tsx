@@ -1,12 +1,122 @@
 import { ArrowLeft, ArrowRight, Check, Pencil, Plus, Trash2 } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { TaskFormModal } from '../components/tasks/TaskForm'
 import { Button } from '../components/ui/Button'
 import { EmptyState, PageHeader, RecordCard, SectionHeader } from '../components/ui/Panels'
 import { StatusStamp, type StampStatus } from '../components/ui/StatusStamp'
 import { daysUntil, formatShortDate, formatTime, relativeDue } from '../lib/format'
-import { addDays, fromLocalInput, todayKey, toLocalInput, weekdayOf, type LTask, type TaskStatus } from '../lib/localDb'
+import {
+  addDays,
+  fromLocalInput,
+  todayKey,
+  toLocalInput,
+  weekdayOf,
+  type LInboxItem,
+  type LTask,
+  type TaskStatus,
+} from '../lib/localDb'
 import { useAppData } from '../lib/store'
+
+interface QuickCaptureProps {
+  /** Pre-selected course id when the user has not chosen one manually. */
+  defaultCourseId?: number | null
+  /** Optional trailing element (e.g. an Inbox count link). */
+  trailing?: ReactNode
+}
+
+/** Compact one-line capture input shared between Dashboard and Tasks. */
+export function QuickCapture({ defaultCourseId = null, trailing }: QuickCaptureProps) {
+  const { db, mutate } = useAppData()
+  const [text, setText] = useState('')
+  const [selectedCourse, setSelectedCourse] = useState<string | null>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  const effectiveCourse =
+    selectedCourse !== null
+      ? selectedCourse
+      : defaultCourseId !== null && db.courses.some((c) => c.id === defaultCourseId)
+        ? String(defaultCourseId)
+        : ''
+
+  const submit = (e: FormEvent) => {
+    e.preventDefault()
+    const trimmed = text.trim().slice(0, 500)
+    if (!trimmed) return
+    const courseId = effectiveCourse ? Number(effectiveCourse) : null
+    mutate((d, nid) => {
+      d.inbox ??= []
+      d.inbox.unshift({
+        id: nid(),
+        text: trimmed,
+        created_at: new Date().toISOString(),
+        course_id: courseId !== null && d.courses.some((c) => c.id === courseId) ? courseId : null,
+      })
+    })
+    setText('')
+    inputRef.current?.focus()
+  }
+
+  return (
+    <RecordCard className="mb-4 lg:mb-5 px-3 sm:px-4 py-2.5">
+      <form onSubmit={submit} className="flex flex-wrap items-center gap-2">
+        <input
+          ref={inputRef}
+          type="text"
+          maxLength={500}
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder="Jot something down… (Enter to save)"
+          aria-label="Quick capture note"
+          className="h-9 flex-1 min-w-[180px] px-2.5 bg-surface-sunken border border-border-strong rounded-xs text-[14px] text-ink placeholder:text-ink-faint focus:outline-none focus:border-accent"
+        />
+        <select
+          value={effectiveCourse}
+          onChange={(e) => setSelectedCourse(e.target.value)}
+          aria-label="Course for note"
+          className="h-9 max-w-[140px] px-2 bg-surface-sunken border border-border-strong rounded-xs text-[13px] text-ink focus:outline-none focus:border-accent"
+        >
+          <option value="">No course</option>
+          {db.courses.map((c) => (
+            <option key={c.id} value={String(c.id)}>
+              {c.code}
+            </option>
+          ))}
+        </select>
+        <Button type="submit" size="sm" variant="secondary" disabled={!text.trim()}>
+          Save
+        </Button>
+        {trailing}
+      </form>
+    </RecordCard>
+  )
+}
+
+const URL_RE = /https?:\/\/[^\s<>()]+/i
+
+function extractUrl(text: string): { url: string; title: string } | null {
+  const match = URL_RE.exec(text)
+  if (!match) return null
+  const url = match[0].replace(/[.,;:!?]+$/, '')
+  const rest = text.replace(match[0], '').replace(/\s+/g, ' ').trim()
+  let host = url
+  try {
+    host = new URL(url).host || url
+  } catch {
+    /* keep raw url */
+  }
+  return { url, title: rest || host }
+}
+
+function timeAgo(iso: string, now: Date): string {
+  const diffMs = Math.max(0, now.getTime() - Date.parse(iso))
+  const mins = Math.floor(diffMs / 60_000)
+  if (mins < 1) return 'just now'
+  if (mins < 60) return `${mins}m ago`
+  const hrs = Math.floor(mins / 60)
+  if (hrs < 24) return `${hrs}h ago`
+  const days = Math.floor(hrs / 24)
+  return `${days}d ago`
+}
 
 type TasksView = 'list' | 'week' | 'course' | 'board'
 
@@ -70,18 +180,19 @@ export function TasksPage() {
   const [justDone, setJustDone] = useState<number | null>(null)
   const [showAllDone, setShowAllDone] = useState(false)
   const [showNoDue, setShowNoDue] = useState(false)
+  const [inboxOpen, setInboxOpen] = useState(true)
   const [pushMenuOpen, setPushMenuOpen] = useState(false)
-  const [notice, setNotice] = useState<string | null>(null)
+  const [notice, setNotice] = useState<{ text: string; undo?: () => void } | null>(null)
   const noticeTimer = useRef<number | undefined>(undefined)
   const now = new Date()
   const today = todayKey(now)
 
   useEffect(() => () => window.clearTimeout(noticeTimer.current), [])
 
-  const showNotice = (msg: string) => {
-    setNotice(msg)
+  const showNotice = (text: string, opts?: { undo?: () => void; ms?: number }) => {
+    setNotice({ text, undo: opts?.undo })
     window.clearTimeout(noticeTimer.current)
-    noticeTimer.current = window.setTimeout(() => setNotice(null), 4500)
+    noticeTimer.current = window.setTimeout(() => setNotice(null), opts?.ms ?? 4500)
   }
 
   const changeView = (next: TasksView) => {
@@ -154,6 +265,92 @@ export function TasksPage() {
     if (!window.confirm(`Delete "${t.title}"?`)) return
     mutate((d) => {
       d.tasks = d.tasks.filter((x) => x.id !== t.id)
+    })
+  }
+
+  const inboxItems = db.inbox ?? []
+
+  const setInboxCourse = (itemId: number, courseId: number | null) => {
+    mutate((d) => {
+      const item = (d.inbox ?? []).find((x) => x.id === itemId)
+      if (item) item.course_id = courseId
+    })
+  }
+
+  const triageToTask = (item: LInboxItem) => {
+    let created: LTask | null = null
+    mutate((d, nid) => {
+      const task: LTask = {
+        id: nid(),
+        title: item.text,
+        course_id: item.course_id !== null && d.courses.some((c) => c.id === item.course_id) ? item.course_id : null,
+        due_at: null,
+        status: 'TODO',
+        priority: 'MEDIUM',
+        notes: '',
+        completed_at: null,
+      }
+      d.tasks.push(task)
+      d.inbox = (d.inbox ?? []).filter((x) => x.id !== item.id)
+      created = task
+    })
+    if (created) {
+      setEditing(created)
+      setFormOpen(true)
+    }
+  }
+
+  const triageToTopic = (item: LInboxItem) => {
+    const course = item.course_id !== null ? courses.get(item.course_id) : undefined
+    if (!course) return
+    mutate((d, nid) => {
+      const c = d.courses.find((x) => x.id === course.id)
+      if (!c) return
+      c.topics ??= []
+      c.topics.push({
+        id: nid(),
+        title: item.text,
+        confidence: null,
+        last_reviewed: null,
+        review_count: 0,
+      })
+      d.inbox = (d.inbox ?? []).filter((x) => x.id !== item.id)
+    })
+    showNotice(`Added topic to ${course.code}.`)
+  }
+
+  const triageToLink = (item: LInboxItem, link: { url: string; title: string }) => {
+    mutate((d, nid) => {
+      d.links.push({
+        id: nid(),
+        title: link.title,
+        url: link.url,
+        description: '',
+        course_id: item.course_id !== null && d.courses.some((c) => c.id === item.course_id) ? item.course_id : null,
+        category: '',
+        favorite: false,
+      })
+      d.inbox = (d.inbox ?? []).filter((x) => x.id !== item.id)
+    })
+    showNotice(`Saved link "${link.title}".`)
+  }
+
+  const deleteInboxItem = (item: LInboxItem) => {
+    const snapshot = { ...item }
+    mutate((d) => {
+      d.inbox = (d.inbox ?? []).filter((x) => x.id !== item.id)
+    })
+    showNotice('Note deleted.', {
+      ms: 5000,
+      undo: () => {
+        mutate((d) => {
+          d.inbox ??= []
+          if (!d.inbox.some((x) => x.id === snapshot.id)) {
+            d.inbox.unshift(snapshot)
+          }
+        })
+        setNotice(null)
+      },
     })
   }
 
@@ -383,6 +580,8 @@ export function TasksPage() {
         }
       />
 
+      <QuickCapture />
+
       {db.tasks.length > 0 && (
         <div className="mb-4 lg:mb-5 flex flex-wrap gap-1.5" role="tablist" aria-label="Task view">
           {VIEWS.map((v) => {
@@ -412,16 +611,121 @@ export function TasksPage() {
           role="status"
           className="mb-4 px-4 py-2.5 bg-surface border border-border-strong rounded-sm text-[13px] text-ink flex items-center justify-between gap-3"
         >
-          <span>{notice}</span>
-          <button
-            type="button"
-            onClick={() => setNotice(null)}
-            className="text-[12px] text-ink-muted hover:text-ink cursor-pointer"
-            aria-label="Dismiss notice"
-          >
-            Dismiss
-          </button>
+          <span>{notice.text}</span>
+          <div className="flex items-center gap-3 shrink-0">
+            {notice.undo && (
+              <button
+                type="button"
+                onClick={notice.undo}
+                className="text-[12.5px] font-medium text-accent-strong hover:underline cursor-pointer"
+              >
+                Undo
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setNotice(null)}
+              className="text-[12px] text-ink-muted hover:text-ink cursor-pointer"
+              aria-label="Dismiss notice"
+            >
+              Dismiss
+            </button>
+          </div>
         </div>
+      )}
+
+      {inboxItems.length > 0 && (
+        <RecordCard className="mb-4 lg:mb-5">
+          <SectionHeader
+            title="Inbox"
+            meta={`${inboxItems.length}`}
+            action={
+              <button
+                type="button"
+                onClick={() => setInboxOpen((v) => !v)}
+                aria-expanded={inboxOpen}
+                className="text-[13px] font-medium text-accent-strong hover:underline cursor-pointer"
+              >
+                {inboxOpen ? 'Hide' : `Show (${inboxItems.length})`}
+              </button>
+            }
+          />
+          {inboxOpen && (
+            <ul className="divide-y divide-rule">
+              {inboxItems.map((item) => {
+                const course = item.course_id !== null ? courses.get(item.course_id) : undefined
+                const link = extractUrl(item.text)
+                return (
+                  <li key={item.id} className="px-4 sm:px-5 py-3 flex flex-col gap-2">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[14px] text-ink leading-snug break-words">{item.text}</div>
+                        <div className="mt-0.5 flex flex-wrap items-center gap-x-2 tabular text-[12px] text-ink-muted">
+                          {course && (
+                            <span className="inline-flex items-center gap-1.5">
+                              <span className="w-2 h-2 rounded-[1px]" style={{ background: course.color }} aria-hidden="true" />
+                              {course.code}
+                            </span>
+                          )}
+                          {course && <span>·</span>}
+                          <span>{timeAgo(item.created_at, now)}</span>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => deleteInboxItem(item)}
+                        className="p-1.5 text-ink-muted hover:text-danger shrink-0 cursor-pointer"
+                        aria-label="Delete note"
+                      >
+                        <Trash2 size={15} />
+                      </button>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <select
+                        value={course ? String(course.id) : ''}
+                        onChange={(e) => setInboxCourse(item.id, e.target.value ? Number(e.target.value) : null)}
+                        aria-label="Course for note"
+                        className="h-7 max-w-[130px] px-1.5 bg-surface-sunken border border-border rounded-xs text-[12px] text-ink focus:outline-none focus:border-accent"
+                      >
+                        <option value="">No course</option>
+                        {db.courses.map((c) => (
+                          <option key={c.id} value={String(c.id)}>
+                            {c.code}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        onClick={() => triageToTask(item)}
+                        className="h-7 px-2 rounded-xs border border-border bg-surface-sunken text-[12px] font-medium text-ink-muted hover:text-ink hover:border-border-strong cursor-pointer transition-colors"
+                      >
+                        Task
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!course}
+                        title={!course ? 'Pick a course first' : `Add topic to ${course.code}`}
+                        onClick={() => triageToTopic(item)}
+                        className="h-7 px-2 rounded-xs border border-border bg-surface-sunken text-[12px] font-medium text-ink-muted hover:text-ink hover:border-border-strong disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-colors"
+                      >
+                        Topic
+                      </button>
+                      {link && (
+                        <button
+                          type="button"
+                          onClick={() => triageToLink(item, link)}
+                          className="h-7 px-2 rounded-xs border border-border bg-surface-sunken text-[12px] font-medium text-ink-muted hover:text-ink hover:border-border-strong cursor-pointer transition-colors"
+                        >
+                          Link
+                        </button>
+                      )}
+                    </div>
+                  </li>
+                )
+              })}
+            </ul>
+          )}
+        </RecordCard>
       )}
 
       {db.tasks.length === 0 ? (

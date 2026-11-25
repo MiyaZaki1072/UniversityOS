@@ -16,6 +16,7 @@ import { TodayDocket } from './dashboard/TodayDocket'
 import { VitalsStrip, type Vital } from './dashboard/VitalsStrip'
 import { WeeklyActivity } from './dashboard/WeeklyActivity'
 import { WorkQueue } from './dashboard/WorkQueue'
+import { QuickCapture } from './Tasks'
 import { WeeklyReviewDrawer } from './WeeklyReview'
 
 /** One clock for the whole page, so the countdown, docket and queue agree on "now". */
@@ -190,6 +191,11 @@ export function Dashboard() {
   const isResetDay = todayIndex === 5 || todayIndex === 6 || todayIndex === 0
   const showReviewNudge = canEdit && isResetDay && thisWeekReview === null
   const weekFocus = thisWeekReview?.focus.trim() ?? ''
+  const liveClass = data.today.classes.find((o) => {
+    const t = now.getTime()
+    return o.course_id !== null && t >= Date.parse(o.start_at) && t < Date.parse(o.end_at)
+  })
+  const inboxCount = db.inbox?.length ?? 0
 
   return (
     <>
@@ -250,6 +256,22 @@ export function Dashboard() {
             Start
           </Button>
         </RecordCard>
+      )}
+
+      {canEdit && (
+        <QuickCapture
+          defaultCourseId={liveClass?.course_id ?? null}
+          trailing={
+            inboxCount > 0 ? (
+              <Link
+                to="/tasks"
+                className="tabular text-[12.5px] font-medium text-accent-strong hover:underline whitespace-nowrap ml-auto sm:ml-1"
+              >
+                Inbox: {inboxCount}
+              </Link>
+            ) : undefined
+          }
+        />
       )}
 
       {isNew && (

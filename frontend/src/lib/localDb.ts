@@ -207,6 +207,13 @@ export interface LWeeklyReview {
   focus: string // "Main focus this week"
 }
 
+export interface LInboxItem {
+  id: number
+  text: string
+  created_at: string // ISO
+  course_id: number | null
+}
+
 export interface LocalDB {
   version: 1
   semester: LSemester | null
@@ -218,6 +225,7 @@ export interface LocalDB {
   links: LLink[]
   pastSemesters: LArchivedSemester[]
   weeklyReviews: LWeeklyReview[]
+  inbox: LInboxItem[]
   settings: LSettings
   nextId: number
 }
@@ -233,6 +241,7 @@ export const emptyDb = (): LocalDB => ({
   links: [],
   pastSemesters: [],
   weeklyReviews: [],
+  inbox: [],
   settings: {
     weekly_study_target_minutes: 1200,
     pomodoro: { focus_minutes: 25, short_break_minutes: 5, long_break_minutes: 15, long_break_every: 4 },
@@ -256,6 +265,7 @@ export function normalizeDb(raw: LocalDB): LocalDB {
     links: [...(raw.links ?? [])],
     pastSemesters: raw.pastSemesters ?? [],
     weeklyReviews: raw.weeklyReviews ?? [],
+    inbox: raw.inbox ?? [],
     settings: {
       ...base.settings,
       ...(raw.settings ?? {}),
@@ -660,7 +670,7 @@ export function archiveCurrentSemester(draft: LocalDB, nid: () => number): void 
     courses: structuredClone(draft.courses),
   })
   const gone = new Set(draft.courses.map((c) => c.id))
-  for (const x of [...draft.tasks, ...draft.links, ...draft.studySessions]) {
+  for (const x of [...draft.tasks, ...draft.links, ...draft.studySessions, ...(draft.inbox ?? [])]) {
     if (x.course_id !== null && gone.has(x.course_id)) x.course_id = null
   }
   draft.semester = null
@@ -1334,6 +1344,7 @@ export function applyPlan(db: LocalDB, plan: ImportPlan, makeActive: boolean): {
     tasks,
     links: db.links.map(unlink),
     studySessions: db.studySessions.map(unlink),
+    inbox: (db.inbox ?? []).map(unlink),
     nextId: id,
   })
   return { next, added: added.length, skipped }
