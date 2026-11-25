@@ -1,9 +1,10 @@
-import { CalendarClock, FileInput, ListChecks, Plus, Timer } from 'lucide-react'
+import { CalendarCheck, CalendarClock, FileInput, ListChecks, Plus, Timer } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { DATA_MODE } from '../lib/api'
 import { useAppData } from '../lib/store'
 import { formatLongDate, formatMinutes, USER_TZ } from '../lib/format'
+import { reviewDoneThisWeek } from '../lib/localDb'
 import type { CourseRef } from '../lib/types'
 import { Button } from '../components/ui/Button'
 import { CountdownPanel } from '../components/ui/CountdownPanel'
@@ -15,6 +16,8 @@ import { TodayDocket } from './dashboard/TodayDocket'
 import { VitalsStrip, type Vital } from './dashboard/VitalsStrip'
 import { WeeklyActivity } from './dashboard/WeeklyActivity'
 import { WorkQueue } from './dashboard/WorkQueue'
+import { QuickCapture } from './Tasks'
+import { WeeklyReviewDrawer } from './WeeklyReview'
 
 /** One clock for the whole page, so the countdown, docket and queue agree on "now". */
 function usePageClock() {
@@ -65,9 +68,10 @@ function useNewTaskShortcut(setOpen: (open: boolean) => void) {
 const canEdit = DATA_MODE === 'local' || DATA_MODE === 'server'
 
 export function Dashboard() {
-  const { data, error, loading, reload, openImport, mutate } = useAppData()
+  const { data, error, loading, reload, openImport, db, mutate } = useAppData()
   const now = usePageClock()
   const [taskFormOpen, setTaskFormOpen] = useState(false)
+  const [reviewOpen, setReviewOpen] = useState(false)
   useNewTaskShortcut(setTaskFormOpen)
 
   const toggleHabit = (id: number, done: boolean) =>
@@ -183,22 +187,44 @@ export function Dashboard() {
     .format(new Date(`${data.date}T12:00:00+07:00`))
     .toUpperCase()
 
+  const thisWeekReview = canEdit ? reviewDoneThisWeek(db, data.date) : null
+  const isResetDay = todayIndex === 5 || todayIndex === 6 || todayIndex === 0
+  const showReviewNudge = canEdit && isResetDay && thisWeekReview === null
+  const weekFocus = thisWeekReview?.focus.trim() ?? ''
+  const liveClass = data.today.classes.find((o) => {
+    const t = now.getTime()
+    return o.course_id !== null && t >= Date.parse(o.start_at) && t < Date.parse(o.end_at)
+  })
+  const inboxCount = db.inbox?.length ?? 0
+
   return (
     <>
       <PageHeader
         division="Division 01 · Daily Briefing"
         title="Today's Briefing"
         subtitle={
-          <span>
-            <span className="tabular text-ink">{formatLongDate(data.date)}</span>
-            <span className="mx-2 text-ink-muted" aria-hidden="true">
-              —
+          <div className="flex flex-col gap-1">
+            <span>
+              <span className="tabular text-ink">{formatLongDate(data.date)}</span>
+              <span className="mx-2 text-ink-muted" aria-hidden="true">
+                —
+              </span>
+              {docketSummary(data.today.classes.length, data.today.events.length, dueToday)}
             </span>
-            {docketSummary(data.today.classes.length, data.today.events.length, dueToday)}
-          </span>
+            {weekFocus && (
+              <span className="text-[13px] text-ink-muted">
+                This week&apos;s focus: <span className="text-ink">{weekFocus}</span>
+              </span>
+            )}
+          </div>
         }
         aside={
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
+            {canEdit && (
+              <Button variant="secondary" icon={<CalendarCheck size={16} />} onClick={() => setReviewOpen(true)}>
+                Weekly review
+              </Button>
+            )}
             {!isNew && (
               <Button variant="secondary" icon={<FileInput size={16} />} onClick={openImport}>
                 Import with AI
@@ -219,6 +245,34 @@ export function Dashboard() {
           </div>
         }
       />
+
+      {showReviewNudge && (
+        <RecordCard className="mb-4 lg:mb-5 px-4 sm:px-5 py-3 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <CalendarCheck size={16} className="text-accent-strong shrink-0" aria-hidden="true" />
+            <span className="text-[14px] text-ink">Take 5 minutes to plan your week.</span>
+          </div>
+          <Button variant="primary" size="sm" onClick={() => setReviewOpen(true)}>
+            Start
+          </Button>
+        </RecordCard>
+      )}
+
+      {canEdit && (
+        <QuickCapture
+          defaultCourseId={liveClass?.course_id ?? null}
+          trailing={
+            inboxCount > 0 ? (
+              <Link
+                to="/tasks"
+                className="tabular text-[12.5px] font-medium text-accent-strong hover:underline whitespace-nowrap ml-auto sm:ml-1"
+              >
+                Inbox: {inboxCount}
+              </Link>
+            ) : undefined
+          }
+        />
+      )}
 
       {isNew && (
         <RecordCard className="mb-4 lg:mb-5">
@@ -306,6 +360,7 @@ export function Dashboard() {
       </div>
 
       <TaskFormModal open={taskFormOpen} onClose={() => setTaskFormOpen(false)} />
+      {canEdit && <WeeklyReviewDrawer open={reviewOpen} onClose={() => setReviewOpen(false)} />}
     </>
   )
 }

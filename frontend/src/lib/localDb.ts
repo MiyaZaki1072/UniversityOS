@@ -28,6 +28,7 @@ export interface LAssessment {
   title: string
   points_possible: string
   points_earned: string | null
+  points_expected?: string | null
   due_at: string | null
 }
 
@@ -54,6 +55,31 @@ export interface LResource {
   description: string
 }
 
+export type AttendanceStatus = 'PRESENT' | 'LATE' | 'ABSENT' | 'EXCUSED'
+
+export interface LAttendance {
+  meeting_id: number
+  date: string // YYYY-MM-DD
+  status: AttendanceStatus
+}
+
+export type Confidence = 'RED' | 'AMBER' | 'GREEN'
+
+export interface LTopic {
+  id: number
+  title: string
+  confidence: Confidence | null // null = not rated yet
+  last_reviewed: string | null // YYYY-MM-DD
+  review_count: number
+}
+
+export interface LCourseQuestion {
+  id: number
+  text: string
+  created_at: string
+  answered: boolean
+}
+
 export interface LCourse {
   id: number
   code: string
@@ -68,8 +94,19 @@ export interface LCourse {
   resources: LResource[]
   /** Letter the university actually gave (e.g. "B+"). Overrides the computed letter for GPA. */
   official_grade?: string | null
+  /** Gut-feel letter from the course's scale (e.g. "B+"). */
+  expected_grade?: string | null
   /** LETTER (default) or SU: satisfactory/unsatisfactory, never counted in GPA. */
   grading?: 'LETTER' | 'SU'
+  /** Minimum attendance percentage required (e.g. "80"); null/missing = no rule. */
+  attendance_min_percent?: string | null
+  /** At most one record per (meeting_id, date). */
+  attendance?: LAttendance[]
+  /** Study topics / chapters for retrospective revision tracking. */
+  topics?: LTopic[]
+  instructor_email?: string | null
+  office_hours?: string | null
+  questions?: LCourseQuestion[]
 }
 
 export const isSU = (c: Pick<LCourse, 'grading'>) => c.grading === 'SU'
@@ -172,6 +209,21 @@ export interface LSettings {
   reminders: LReminderSettings
 }
 
+export interface LWeeklyReview {
+  id: number
+  week_start: string // YYYY-MM-DD, Monday of the week being planned
+  done_on: string // YYYY-MM-DD
+  wins: string
+  focus: string // "Main focus this week"
+}
+
+export interface LInboxItem {
+  id: number
+  text: string
+  created_at: string // ISO
+  course_id: number | null
+}
+
 export interface LocalDB {
   version: 1
   semester: LSemester | null
@@ -182,6 +234,8 @@ export interface LocalDB {
   studySessions: LStudySession[]
   links: LLink[]
   pastSemesters: LArchivedSemester[]
+  weeklyReviews: LWeeklyReview[]
+  inbox: LInboxItem[]
   settings: LSettings
   nextId: number
 }
@@ -196,6 +250,8 @@ export const emptyDb = (): LocalDB => ({
   studySessions: [],
   links: [],
   pastSemesters: [],
+  weeklyReviews: [],
+  inbox: [],
   settings: {
     weekly_study_target_minutes: 1200,
     pomodoro: { focus_minutes: 25, short_break_minutes: 5, long_break_minutes: 15, long_break_every: 4 },
@@ -218,6 +274,8 @@ export function normalizeDb(raw: LocalDB): LocalDB {
     studySessions: raw.studySessions ?? [],
     links: [...(raw.links ?? [])],
     pastSemesters: raw.pastSemesters ?? [],
+    weeklyReviews: raw.weeklyReviews ?? [],
+    inbox: raw.inbox ?? [],
     settings: {
       ...base.settings,
       ...(raw.settings ?? {}),
@@ -361,6 +419,61 @@ export function standingFor(c: LCourse): GradeStanding {
 const scaleOf = (c: LCourse) =>
   [...(c.scale.length ? c.scale : DEFAULT_SCALE)].sort((a, b) => Number(b.minimum_percentage) - Number(a.minimum_percentage))
 
+const hasNum = (v: string | null | undefined): v is string =>
+  v !== undefined && v !== null && v.trim() !== '' && Number.isFinite(Number(v))
+
+export interface ExpectedStanding {
+  percent: number | null
+  letter: string | null
+  complete: boolean
+  guessedItems: number
+  openItems: number
+}
+
+/** Final standing if real scores stand and expected scores come true for open items. */
+export function expectedStanding(c: LCourse): ExpectedStanding {
+  let contribution = 0
+  let usedWeight = 0
+  let openItems = 0
+  let guessedItems = 0
+
+  for (const g of c.categories) {
+    let earned = 0
+    let possible = 0
+    for (const a of g.assessments) {
+      const graded = hasNum(a.points_earned)
+      const guessed = hasNum(a.points_expected)
+      if (!graded) {
+        openItems++
+        if (guessed) guessedItems++
+      }
+      const max = Number(a.points_possible)
+      if (!(max > 0)) continue
+      if (graded) {
+        earned += Number(a.points_earned)
+        possible += max
+      } else if (guessed) {
+        earned += Math.max(0, Math.min(max, Number(a.points_expected)))
+        possible += max
+      }
+    }
+    if (possible <= 0) continue
+    contribution += (earned / possible) * Number(g.weight_percent)
+    usedWeight += Number(g.weight_percent)
+  }
+
+  const percent = usedWeight > 0 ? (contribution / usedWeight) * 100 : null
+  const validWeights = c.categories.length > 0 && weightTotal(c) === 100
+  const letter =
+    validWeights && percent !== null
+      ? (scaleOf(c).find((b) => percent >= Number(b.minimum_percentage))?.grade_label ?? null)
+      : null
+  const complete =
+    validWeights && percent !== null && c.categories.every((g) => g.assessments.length > 0) && guessedItems === openItems
+
+  return { percent, letter, complete, guessedItems, openItems }
+}
+
 export interface CourseGrade {
   letter: string | null
   /** Grade point of that letter on the course's scale; null if unknown or S/U. */
@@ -368,7 +481,7 @@ export interface CourseGrade {
   credits: number
   /** S/U course: shown, but never counted in GPA. */
   su: boolean
-  source: 'official' | 'final' | 'projected' | null
+  source: 'official' | 'expected' | 'final' | 'projected' | null
 }
 
 /** The letter that counts for GPA: official grade if entered, else final, else projected. */
@@ -386,19 +499,69 @@ export function courseGrade(c: LCourse): CourseGrade {
   return { letter, point, credits, source, su }
 }
 
-/** Credit-weighted GPA over courses with a known grade point and credits > 0. */
-export function gpaOf(courses: LCourse[]): { gpa: number | null; credits: number; counted: number } {
+/** Expected course grade: official → final → gut-feel expected_grade → expected standing → projected. */
+export function expectedCourseGrade(c: LCourse): CourseGrade {
+  const credits = Number(c.credits) || 0
+  const scale = scaleOf(c)
+  const bandFor = (l: string | null) => (l ? scale.find((b) => b.grade_label.trim().toUpperCase() === l.trim().toUpperCase()) : undefined)
+  const official = bandFor(c.official_grade?.trim() || null) ? c.official_grade!.trim() : null
+  const gutBand = bandFor(c.expected_grade?.trim() || null)
+  const gut = gutBand ? gutBand.grade_label : null
+  const exp = expectedStanding(c)
+  const expLetter = exp.guessedItems > 0 ? exp.letter : null
+  const s = standingFor(c)
+
+  let letter: string | null
+  let source: CourseGrade['source']
+  if (official) {
+    letter = official
+    source = 'official'
+  } else if (s.letter_grade) {
+    // Everything is graded: the real final letter beats any guess.
+    letter = s.letter_grade
+    source = 'final'
+  } else if (gut) {
+    letter = gut
+    source = 'expected'
+  } else if (expLetter) {
+    letter = expLetter
+    source = 'expected'
+  } else if (s.projected_letter_grade) {
+    letter = s.projected_letter_grade
+    source = 'projected'
+  } else {
+    letter = null
+    source = null
+  }
+
+  const band = bandFor(letter)
+  const su = isSU(c)
+  const point = !su && band && band.grade_point !== '' ? Number(band.grade_point) : null
+  return { letter, point, credits, source, su }
+}
+
+function computeGpa(courses: LCourse[], gradeOf: (c: LCourse) => CourseGrade): { gpa: number | null; credits: number; counted: number } {
   let points = 0
   let credits = 0
   let counted = 0
   for (const c of courses) {
-    const g = courseGrade(c)
+    const g = gradeOf(c)
     if (g.point === null || g.credits <= 0) continue
     points += g.point * g.credits
     credits += g.credits
     counted++
   }
   return { gpa: credits > 0 ? points / credits : null, credits, counted }
+}
+
+/** Credit-weighted GPA over courses with a known grade point and credits > 0. */
+export function gpaOf(courses: LCourse[]): { gpa: number | null; credits: number; counted: number } {
+  return computeGpa(courses, courseGrade)
+}
+
+/** Credit-weighted GPA if expectations come true. */
+export function expectedGpaOf(courses: LCourse[]): { gpa: number | null; credits: number; counted: number } {
+  return computeGpa(courses, expectedCourseGrade)
 }
 
 export interface RequiredForBand {
@@ -443,6 +606,155 @@ export function requiredForBands(c: LCourse): { bands: RequiredForBand[]; remain
   return { bands, remainingWeight: Math.round(slope * 100) / 100 }
 }
 
+export interface GutCheck {
+  label: string
+  minimum: number
+  required: number | null
+  status: RequiredForBand['status'] | null
+}
+
+/** Check how realistic the student's gut-feel letter grade is against remaining work. */
+export function gutCheck(c: LCourse): GutCheck | null {
+  const raw = c.expected_grade?.trim()
+  if (!raw) return null
+  const band = scaleOf(c).find((b) => b.grade_label.trim().toUpperCase() === raw.toUpperCase())
+  if (!band) return null
+  const need = requiredForBands(c)
+  if (!need) {
+    return { label: band.grade_label, minimum: Number(band.minimum_percentage), required: null, status: null }
+  }
+  const match = need.bands.find((b) => b.label.trim().toUpperCase() === raw.toUpperCase())
+  if (!match) {
+    return { label: band.grade_label, minimum: Number(band.minimum_percentage), required: null, status: null }
+  }
+  return { label: match.label, minimum: match.minimum, required: match.required, status: match.status }
+}
+
+export interface GuessAccuracy {
+  count: number
+  meanGap: number | null
+  meanAbsGap: number | null
+}
+
+/** Calibration across assessments that have both a real score and a guess (in percentage points). */
+export function guessAccuracy(courses: LCourse[]): GuessAccuracy {
+  let count = 0
+  let sumGap = 0
+  let sumAbs = 0
+  for (const c of courses) {
+    for (const g of c.categories) {
+      for (const a of g.assessments) {
+        if (!hasNum(a.points_earned) || !hasNum(a.points_expected)) continue
+        const max = Number(a.points_possible)
+        if (!(max > 0)) continue
+        const gap = ((Number(a.points_earned) - Number(a.points_expected)) / max) * 100
+        sumGap += gap
+        sumAbs += Math.abs(gap)
+        count++
+      }
+    }
+  }
+  return {
+    count,
+    meanGap: count > 0 ? sumGap / count : null,
+    meanAbsGap: count > 0 ? sumAbs / count : null,
+  }
+}
+
+export interface WhatIfGpa {
+  semester: number | null
+  cumulative: number | null
+  credits: number
+}
+
+/**
+ * Simulated semester and cumulative GPA using `picks[course.id]` when valid on that course's scale,
+ * falling back to `courseGrade(c)`. S/U courses never count.
+ */
+export function whatIfGpa(
+  past: LCourse[],
+  current: LCourse[],
+  picks: Record<number, string | null>,
+): WhatIfGpa {
+  const pastRes = gpaOf(past)
+  const pastPoints = pastRes.gpa !== null ? pastRes.gpa * pastRes.credits : 0
+  let curPoints = 0
+  let curCredits = 0
+
+  for (const c of current) {
+    if (isSU(c)) continue
+    const credits = Number(c.credits) || 0
+    if (credits <= 0) continue
+
+    const rawPick = picks[c.id]?.trim() ?? ''
+    const pickedBand = rawPick
+      ? scaleOf(c).find((b) => b.grade_label.trim().toUpperCase() === rawPick.toUpperCase())
+      : undefined
+    const pickedPoint =
+      pickedBand && pickedBand.grade_point !== '' && Number.isFinite(Number(pickedBand.grade_point))
+        ? Number(pickedBand.grade_point)
+        : null
+
+    const point = pickedPoint !== null ? pickedPoint : courseGrade(c).point
+    if (point === null) continue
+    curPoints += point * credits
+    curCredits += credits
+  }
+
+  const totalCredits = pastRes.credits + curCredits
+  return {
+    semester: curCredits > 0 ? curPoints / curCredits : null,
+    cumulative: totalCredits > 0 ? (pastPoints + curPoints) / totalCredits : null,
+    credits: totalCredits,
+  }
+}
+
+export interface RequiredSemesterGpa {
+  needed: number | null
+  status: 'secured' | 'possible' | 'impossible'
+}
+
+/** Credit-weighted average grade point needed this semester to reach `target` cumulative GPA. */
+export function requiredSemesterGpa(past: LCourse[], current: LCourse[], target: number): RequiredSemesterGpa {
+  const pastRes = gpaOf(past)
+  const pastPoints = pastRes.gpa !== null ? pastRes.gpa * pastRes.credits : 0
+
+  let curCredits = 0
+  let maxPoints = 0
+  let minPoints = 0
+  for (const c of current) {
+    if (isSU(c)) continue
+    const cr = Number(c.credits) || 0
+    if (cr <= 0) continue
+    const pts = scaleOf(c)
+      .map((b) => (b.grade_point !== '' ? Number(b.grade_point) : NaN))
+      .filter((n) => Number.isFinite(n))
+    const hi = pts.length > 0 ? Math.max(...pts) : 4
+    const lo = pts.length > 0 ? Math.min(...pts) : 0
+    curCredits += cr
+    maxPoints += hi * cr
+    minPoints += lo * cr
+  }
+
+  if (curCredits <= 0) {
+    const secured = pastRes.gpa !== null && pastRes.gpa >= target - 1e-9
+    return { needed: null, status: secured ? 'secured' : 'impossible' }
+  }
+
+  const totalCredits = pastRes.credits + curCredits
+  const max = maxPoints / curCredits
+  const min = minPoints / curCredits
+  const rawNeeded = (target * totalCredits - pastPoints) / curCredits
+
+  if (rawNeeded <= Math.max(0, min) + 1e-9) {
+    return { needed: Math.max(0, rawNeeded), status: 'secured' }
+  }
+  if (rawNeeded > max + 1e-9) {
+    return { needed: rawNeeded, status: 'impossible' }
+  }
+  return { needed: rawNeeded, status: 'possible' }
+}
+
 /* ------------------------------------------------------------------ */
 /* Semesters                                                           */
 /* ------------------------------------------------------------------ */
@@ -462,7 +774,7 @@ export function archiveCurrentSemester(draft: LocalDB, nid: () => number): void 
     courses: structuredClone(draft.courses),
   })
   const gone = new Set(draft.courses.map((c) => c.id))
-  for (const x of [...draft.tasks, ...draft.links, ...draft.studySessions]) {
+  for (const x of [...draft.tasks, ...draft.links, ...draft.studySessions, ...(draft.inbox ?? [])]) {
     if (x.course_id !== null && gone.has(x.course_id)) x.course_id = null
   }
   draft.semester = null
@@ -477,6 +789,441 @@ export function meetingActiveOn(m: LMeeting, dateKey: string, semester: LSemeste
   const from = m.starts_on ?? semester?.start_date ?? null
   const to = m.ends_on ?? semester?.end_date ?? null
   return m.weekday === weekdayOf(dateKey) && (!from || dateKey >= from) && (!to || dateKey <= to)
+}
+
+/* ------------------------------------------------------------------ */
+/* Attendance                                                          */
+/* ------------------------------------------------------------------ */
+
+const isDateKey = (v: string | null | undefined): v is string =>
+  typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) && !Number.isNaN(Date.parse(`${v}T12:00:00Z`))
+
+/** Every scheduled session of the course across the term, sorted by date then start time. */
+export function courseSessions(c: LCourse, semester: LSemester | null): { meeting_id: number; date: string }[] {
+  const semStart = isDateKey(semester?.start_date) ? semester!.start_date : null
+  const semEnd = isDateKey(semester?.end_date) ? semester!.end_date : null
+
+  const countable: { meeting: LMeeting; from: string; to: string }[] = []
+  for (const m of c.meetings) {
+    const from = (isDateKey(m.starts_on) ? m.starts_on : null) ?? semStart
+    const to = (isDateKey(m.ends_on) ? m.ends_on : null) ?? semEnd
+    if (from !== null && to !== null && from <= to) {
+      countable.push({ meeting: m, from, to })
+    }
+  }
+  if (countable.length === 0) return []
+
+  let rangeStart = countable[0].from
+  let rangeEnd = countable[0].to
+  for (const item of countable) {
+    if (item.from < rangeStart) rangeStart = item.from
+    if (item.to > rangeEnd) rangeEnd = item.to
+  }
+
+  const ordered = countable
+    .map((x) => x.meeting)
+    .sort((a, b) => a.start_time.localeCompare(b.start_time) || a.id - b.id)
+
+  const out: { meeting_id: number; date: string }[] = []
+  for (let d = rangeStart; d <= rangeEnd; d = addDays(d, 1)) {
+    for (const m of ordered) {
+      if (meetingActiveOn(m, d, semester)) {
+        out.push({ meeting_id: m.id, date: d })
+      }
+    }
+  }
+  return out
+}
+
+export interface AttendanceSummary {
+  total: number
+  held: number
+  present: number
+  late: number
+  absent: number
+  excused: number
+  unmarked: number
+  percent: number | null
+  minPercent: number | null
+  maxAbsences: number | null
+  canStillMiss: number | null
+  status: 'none' | 'ok' | 'close' | 'over'
+}
+
+export function attendanceSummary(c: LCourse, semester: LSemester | null, today: string): AttendanceSummary {
+  const sessions = courseSessions(c, semester)
+  const records = new Map<string, AttendanceStatus>()
+  for (const r of c.attendance ?? []) {
+    records.set(`${r.meeting_id}:${r.date}`, r.status)
+  }
+
+  let held = 0
+  let present = 0
+  let late = 0
+  let absent = 0
+  let excused = 0
+  let unmarked = 0
+
+  for (const s of sessions) {
+    const isHeld = s.date <= today
+    if (isHeld) held++
+    const st = records.get(`${s.meeting_id}:${s.date}`)
+    if (st === 'PRESENT') present++
+    else if (st === 'LATE') late++
+    else if (st === 'ABSENT') absent++
+    else if (st === 'EXCUSED') excused++
+    else if (isHeld) unmarked++
+  }
+
+  const total = sessions.length
+  const counted = present + late + absent
+  const percent = counted > 0 ? ((present + late) / counted) * 100 : null
+
+  const rawMin = c.attendance_min_percent?.trim() ?? ''
+  const parsedMin = rawMin !== '' ? Number(rawMin) : NaN
+  const minPercent = Number.isFinite(parsedMin) && parsedMin >= 0 && parsedMin <= 100 ? parsedMin : null
+
+  const maxAbsences =
+    minPercent !== null && total > 0 ? Math.floor(((total - excused) * (100 - minPercent)) / 100 + 1e-9) : null
+  const canStillMiss = maxAbsences !== null ? maxAbsences - absent : null
+  const status: AttendanceSummary['status'] =
+    canStillMiss === null ? 'none' : canStillMiss < 0 ? 'over' : canStillMiss <= 1 ? 'close' : 'ok'
+
+  return {
+    total,
+    held,
+    present,
+    late,
+    absent,
+    excused,
+    unmarked,
+    percent,
+    minPercent,
+    maxAbsences,
+    canStillMiss,
+    status,
+  }
+}
+
+/** Insert, replace, or remove (null) an attendance record on a course. */
+export function setAttendance(c: LCourse, meeting_id: number, date: string, status: AttendanceStatus | null): void {
+  const next = (c.attendance ?? []).filter((r) => !(r.meeting_id === meeting_id && r.date === date))
+  if (status !== null) next.push({ meeting_id, date, status })
+  c.attendance = next
+}
+
+/* ------------------------------------------------------------------ */
+/* Topics & revision queue                                             */
+/* ------------------------------------------------------------------ */
+
+export const REVIEW_GAP_DAYS: Record<Confidence, number> = { RED: 1, AMBER: 4, GREEN: 14 }
+
+/** Next scheduled review date for a topic; null when never reviewed (due now). */
+export function topicNextReview(t: LTopic): string | null {
+  if (!t.last_reviewed || !t.confidence) return null
+  return addDays(t.last_reviewed, REVIEW_GAP_DAYS[t.confidence])
+}
+
+/** Log a topic review. Re-rating on the same day updates confidence without incrementing count. */
+export function reviewTopic(t: LTopic, confidence: Confidence, today: string): void {
+  const alreadyToday = t.last_reviewed === today
+  t.confidence = confidence
+  t.last_reviewed = today
+  if (!alreadyToday) t.review_count += 1
+}
+
+export interface DueTopic {
+  course: LCourse
+  topic: LTopic
+  next: string | null
+  overdueDays: number
+}
+
+const CONFIDENCE_RANK: Record<Confidence, number> = { RED: 0, AMBER: 1, GREEN: 3 }
+const confidenceRank = (c: Confidence | null) => (c === null ? 2 : CONFIDENCE_RANK[c])
+
+const daysBetween = (fromKey: string, toKey: string) =>
+  Math.round((Date.parse(`${toKey}T12:00:00Z`) - Date.parse(`${fromKey}T12:00:00Z`)) / 86_400_000)
+
+/** Topics due on or before `today` (including never-reviewed), sorted by confidence then oldest due date. */
+export function dueTopics(courses: LCourse[], today: string): DueTopic[] {
+  const out: DueTopic[] = []
+  for (const course of courses) {
+    for (const topic of course.topics ?? []) {
+      const next = topicNextReview(topic)
+      if (next !== null && next > today) continue
+      const overdueDays = next === null ? 0 : Math.max(0, daysBetween(next, today))
+      out.push({ course, topic, next, overdueDays })
+    }
+  }
+  out.sort((a, b) => {
+    const rankDiff = confidenceRank(a.topic.confidence) - confidenceRank(b.topic.confidence)
+    if (rankDiff !== 0) return rankDiff
+    if (a.next && b.next) return a.next.localeCompare(b.next)
+    if (a.next) return -1
+    if (b.next) return 1
+    return a.topic.id - b.topic.id
+  })
+  return out
+}
+
+export interface TopicStats {
+  total: number
+  red: number
+  amber: number
+  green: number
+  unrated: number
+  due: number
+}
+
+export function topicStats(c: LCourse, today: string): TopicStats {
+  const topics = c.topics ?? []
+  let red = 0
+  let amber = 0
+  let green = 0
+  let unrated = 0
+  let due = 0
+
+  for (const t of topics) {
+    if (t.confidence === 'RED') red++
+    else if (t.confidence === 'AMBER') amber++
+    else if (t.confidence === 'GREEN') green++
+    else unrated++
+
+    const next = topicNextReview(t)
+    if (next === null || next <= today) due++
+  }
+
+  return { total: topics.length, red, amber, green, unrated, due }
+}
+
+export interface PrepDay {
+  date: string // YYYY-MM-DD
+  topicIds: number[]
+  mock: boolean
+}
+
+const PREP_RANK: Record<Confidence, number> = { RED: 0, AMBER: 2, GREEN: 3 }
+const prepRank = (c: Confidence | null) => (c === null ? 1 : PREP_RANK[c])
+
+/** Spread topics backward from an exam date (weakest first), reserving trailing buffer days for mocks. */
+export function examPrepPlan(topics: LTopic[], startDate: string, examDate: string, bufferDays: number): PrepDay[] {
+  if (!isDateKey(startDate) || !isDateKey(examDate)) return []
+  const buf = Math.max(0, Math.min(3, Math.floor(Number.isFinite(bufferDays) ? bufferDays : 0)))
+  const lastStudyDay = addDays(examDate, -1 - buf)
+
+  const studyDates: string[] = []
+  if (startDate <= lastStudyDay) {
+    for (let d = startDate; d <= lastStudyDay; d = addDays(d, 1)) {
+      studyDates.push(d)
+    }
+  }
+
+  const ordered = [...topics].sort((a, b) => {
+    const r = prepRank(a.confidence) - prepRank(b.confidence)
+    if (r !== 0) return r
+    if (!a.last_reviewed && b.last_reviewed) return -1
+    if (a.last_reviewed && !b.last_reviewed) return 1
+    if (a.last_reviewed && b.last_reviewed) {
+      const cmp = a.last_reviewed.localeCompare(b.last_reviewed)
+      if (cmp !== 0) return cmp
+    }
+    return a.id - b.id
+  })
+
+  const days: PrepDay[] = []
+  if (studyDates.length > 0 && ordered.length > 0) {
+    const buckets: number[][] = studyDates.map(() => [])
+    for (let i = 0; i < ordered.length; i++) {
+      const dayIdx = i % studyDates.length
+      const tid = ordered[i].id
+      if (!buckets[dayIdx].includes(tid)) buckets[dayIdx].push(tid)
+    }
+    if (studyDates.length > ordered.length) {
+      const weak = ordered.filter((t) => t.confidence === 'RED' || t.confidence === null)
+      let dayIdx = ordered.length
+      for (const t of weak) {
+        if (dayIdx >= studyDates.length) break
+        if (!buckets[dayIdx].includes(t.id)) buckets[dayIdx].push(t.id)
+        dayIdx++
+      }
+    }
+    for (let i = 0; i < studyDates.length; i++) {
+      if (buckets[i].length > 0) {
+        days.push({ date: studyDates[i], topicIds: buckets[i], mock: false })
+      }
+    }
+  }
+
+  for (let i = buf; i >= 1; i--) {
+    const d = addDays(examDate, -i)
+    if (d >= startDate && d < examDate) {
+      days.push({ date: d, topicIds: [], mock: true })
+    }
+  }
+
+  return days
+}
+
+/* ------------------------------------------------------------------ */
+/* Weekly reviews                                                      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Monday of the week a review done on `today` plans. A weekend review plans the coming week,
+ * so a Sunday reset still counts on Monday.
+ */
+export function reviewWeekStart(today: string): string {
+  return weekdayOf(today) >= 5 ? addDays(weekStart(today), 7) : weekStart(today)
+}
+
+/** The review recorded for the week `today` belongs to (see `reviewWeekStart`), if any. */
+export function reviewDoneThisWeek(db: LocalDB, today: string): LWeeklyReview | null {
+  const week = reviewWeekStart(today)
+  return (db.weeklyReviews ?? []).find((r) => r.week_start === week) ?? null
+}
+
+export interface LastWeekRecap {
+  studyMinutes: number
+  targetMinutes: number
+  tasksDone: number
+  habitPercent: number | null
+  classesMissed: number
+}
+
+/** Recap metrics for the Monday–Sunday week immediately preceding `reviewWeekStart(today)`. */
+export function lastWeekRecap(db: LocalDB, today: string): LastWeekRecap {
+  const thisMon = reviewWeekStart(today)
+  const lastMon = addDays(thisMon, -7)
+  const lastSun = addDays(thisMon, -1)
+
+  let studyMinutes = 0
+  for (let i = 0; i < 7; i++) {
+    studyMinutes += studyMinutesOn(db, addDays(lastMon, i))
+  }
+
+  let tasksDone = 0
+  for (const t of db.tasks) {
+    if (!t.completed_at || Number.isNaN(Date.parse(t.completed_at))) continue
+    const completedDate = todayKey(new Date(t.completed_at))
+    if (completedDate >= lastMon && completedDate <= lastSun) tasksDone++
+  }
+
+  let classesMissed = 0
+  for (const c of db.courses) {
+    for (const r of c.attendance ?? []) {
+      if (r.status === 'ABSENT' && r.date >= lastMon && r.date <= lastSun) classesMissed++
+    }
+  }
+
+  const activeHabits = db.habits.filter((h) => !h.archived)
+  let habitPercent: number | null = null
+  if (activeHabits.length > 0) {
+    let expected = 0
+    let done = 0
+    for (const h of activeHabits) {
+      const target = h.frequency === 'DAILY' ? 7 : Math.max(1, h.target_per_week)
+      expected += target
+      // Extra check-ins on one habit must not make up for another.
+      done += Math.min(target, habitWeekCount(db, h.id, lastMon))
+    }
+    habitPercent = expected > 0 ? Math.min(100, Math.round((done / expected) * 100)) : null
+  }
+
+  return {
+    studyMinutes,
+    targetMinutes: db.settings.weekly_study_target_minutes,
+    tasksDone,
+    habitPercent,
+    classesMissed,
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Semester workload                                                   */
+/* ------------------------------------------------------------------ */
+
+export interface WeekLoadItem {
+  kind: 'EXAM' | 'QUIZ' | 'GRADED' | 'TASK'
+  title: string
+  course_id: number | null
+  date: string // YYYY-MM-DD
+  weight: number | null
+}
+
+export interface WeekLoad {
+  week_start: string // Monday, YYYY-MM-DD
+  index: number // 1-based week of term
+  score: number
+  items: WeekLoadItem[]
+}
+
+export interface SemesterLoad {
+  weeks: WeekLoad[]
+  max: number
+}
+
+const LOAD_KIND_ORDER: Record<WeekLoadItem['kind'], number> = { EXAM: 0, QUIZ: 1, GRADED: 2, TASK: 3 }
+
+/** Weekly workload across the current semester (exams, graded deadlines, and tasks). */
+export function semesterLoad(db: LocalDB): SemesterLoad | null {
+  const sem = db.semester
+  if (!sem || !isDateKey(sem.start_date) || !isDateKey(sem.end_date) || sem.start_date > sem.end_date) {
+    return null
+  }
+
+  const firstWeek = weekStart(sem.start_date)
+  const lastWeek = weekStart(sem.end_date)
+  const weeks: WeekLoad[] = []
+  const byWeek = new Map<string, WeekLoad>()
+  let index = 1
+  for (let w = firstWeek; w <= lastWeek; w = addDays(w, 7)) {
+    const entry: WeekLoad = { week_start: w, index: index++, score: 0, items: [] }
+    weeks.push(entry)
+    byWeek.set(w, entry)
+  }
+
+  const addItem = (iso: string, item: Omit<WeekLoadItem, 'date'>, score: number) => {
+    if (Number.isNaN(Date.parse(iso))) return
+    const date = todayKey(new Date(iso))
+    const bucket = byWeek.get(weekStart(date))
+    if (!bucket) return
+    bucket.items.push({ ...item, date })
+    bucket.score += score
+  }
+
+  for (const c of db.courses) {
+    for (const e of c.exams) {
+      addItem(e.start_at, { kind: e.event_type, title: e.title, course_id: c.id, weight: null }, e.event_type === 'EXAM' ? 3 : 1.5)
+    }
+    for (const g of c.categories) {
+      const catWeight = Number(g.weight_percent)
+      const count = g.assessments.length
+      const perItem = Number.isFinite(catWeight) && catWeight > 0 && count > 0 ? catWeight / count : 0
+      for (const a of g.assessments) {
+        if (!a.due_at) continue
+        addItem(
+          a.due_at,
+          { kind: 'GRADED', title: a.title, course_id: c.id, weight: perItem > 0 ? perItem : null },
+          Math.max(0.5, perItem / 5),
+        )
+      }
+    }
+  }
+
+  for (const t of db.tasks) {
+    if (!t.due_at) continue
+    addItem(t.due_at, { kind: 'TASK', title: t.title, course_id: t.course_id, weight: null }, 0.5)
+  }
+
+  let max = 0
+  for (const w of weeks) {
+    w.score = Math.round(w.score * 1000) / 1000
+    w.items.sort((a, b) => a.date.localeCompare(b.date) || LOAD_KIND_ORDER[a.kind] - LOAD_KIND_ORDER[b.kind])
+    if (w.score > max) max = w.score
+  }
+
+  return { weeks, max }
 }
 
 /** All occurrences between two dates (inclusive), sorted by start. */
@@ -769,7 +1516,49 @@ export function applyPlan(db: LocalDB, plan: ImportPlan, makeActive: boolean): {
     tasks,
     links: db.links.map(unlink),
     studySessions: db.studySessions.map(unlink),
+    inbox: (db.inbox ?? []).map(unlink),
     nextId: id,
   })
   return { next, added: added.length, skipped }
+}
+
+/* ------------------------------------------------------------------ */
+/* Daily consistency                                                   */
+/* ------------------------------------------------------------------ */
+
+export interface DayActivity {
+  date: string // YYYY-MM-DD
+  studyMinutes: number
+  tasksDone: number
+  habitsDone: number
+  score: number
+}
+
+/** Daily activity summary for every date in [fromKey, toKey] (inclusive). */
+export function dailyActivity(db: LocalDB, fromKey: string, toKey: string, now: Date = new Date()): DayActivity[] {
+  if (!isDateKey(fromKey) || !isDateKey(toKey) || fromKey > toKey) return []
+
+  const tasksByDate = new Map<string, number>()
+  for (const t of db.tasks) {
+    if (!t.completed_at || Number.isNaN(Date.parse(t.completed_at))) continue
+    const d = todayKey(new Date(t.completed_at))
+    if (d >= fromKey && d <= toKey) tasksByDate.set(d, (tasksByDate.get(d) ?? 0) + 1)
+  }
+
+  const activeHabitIds = new Set(db.habits.filter((h) => !h.archived).map((h) => h.id))
+  const habitsByDate = new Map<string, number>()
+  for (const l of db.habitLogs) {
+    if (!activeHabitIds.has(l.habit_id)) continue
+    if (l.date >= fromKey && l.date <= toKey) habitsByDate.set(l.date, (habitsByDate.get(l.date) ?? 0) + 1)
+  }
+
+  const out: DayActivity[] = []
+  for (let d = fromKey; d <= toKey; d = addDays(d, 1)) {
+    const studyMinutes = studyMinutesOn(db, d, now)
+    const tasksDone = tasksByDate.get(d) ?? 0
+    const habitsDone = habitsByDate.get(d) ?? 0
+    const score = studyMinutes / 30 + tasksDone + habitsDone * 0.5
+    out.push({ date: d, studyMinutes, tasksDone, habitsDone, score })
+  }
+  return out
 }

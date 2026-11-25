@@ -1,10 +1,88 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { CheckCircle2, Clock, Flame, Target } from 'lucide-react'
 import { EmptyState, PageHeader, RecordCard, SectionHeader, StatCard } from '../components/ui/Panels'
 import { formatMinutes } from '../lib/format'
-import { addDays, habitStreak, sessionMinutes, standingFor, todayKey, weekStart, type LocalDB } from '../lib/localDb'
+import {
+  addDays,
+  dailyActivity,
+  guessAccuracy,
+  habitStreak,
+  semesterLoad,
+  sessionMinutes,
+  standingFor,
+  todayKey,
+  weekStart,
+  type DayActivity,
+  type GuessAccuracy,
+  type LocalDB,
+  type WeekLoadItem,
+} from '../lib/localDb'
 import { useAppData } from '../lib/store'
 import { GradeStandingTable } from './dashboard/GradeStandingTable'
+
+type ActivityLevel = 0 | 1 | 2 | 3 | 4
+
+function activityLevel(score: number): ActivityLevel {
+  if (score <= 0) return 0
+  if (score < 1) return 1
+  if (score < 3) return 2
+  if (score < 6) return 3
+  return 4
+}
+
+const ACTIVITY_CLASS: Record<ActivityLevel, string> = {
+  0: 'bg-surface-sunken border border-rule',
+  1: 'bg-accent-wash border border-border',
+  2: 'bg-accent/45',
+  3: 'bg-accent',
+  4: 'bg-accent-strong',
+}
+
+const WEEKDAY_LABELS = ['Mon', '', 'Wed', '', 'Fri', '', ''] as const
+
+const shortMonth = (key: string) =>
+  new Intl.DateTimeFormat('en-GB', { month: 'short', timeZone: 'UTC' }).format(new Date(`${key}T12:00:00Z`))
+
+function dayTooltip(d: DayActivity): string {
+  const parts: string[] = []
+  if (d.studyMinutes > 0) parts.push(`${formatMinutes(d.studyMinutes)} study`)
+  if (d.tasksDone > 0) parts.push(`${d.tasksDone} ${d.tasksDone === 1 ? 'task' : 'tasks'}`)
+  if (d.habitsDone > 0) parts.push(`${d.habitsDone} ${d.habitsDone === 1 ? 'habit' : 'habits'}`)
+  return parts.length > 0 ? `${shortDate(d.date)} · ${parts.join(', ')}` : `${shortDate(d.date)} · No activity`
+}
+
+type LoadLevel = 'none' | 'light' | 'medium' | 'heavy'
+
+function loadLevel(score: number, max: number): LoadLevel {
+  if (score <= 0 || max <= 0) return 'none'
+  const ratio = score / max
+  if (ratio <= 0.33) return 'light'
+  if (ratio <= 0.66) return 'medium'
+  return 'heavy'
+}
+
+const LOAD_CELL_CLASS: Record<LoadLevel, string> = {
+  none: 'bg-surface-sunken border-rule text-ink-faint',
+  light: 'bg-accent-wash border-border text-ink-muted',
+  medium: 'bg-mustard-wash border-mustard text-mustard-ink',
+  heavy: 'bg-danger-wash border-danger text-danger',
+}
+
+const LOAD_LABEL: Record<LoadLevel, string> = {
+  none: 'no load',
+  light: 'light',
+  medium: 'medium',
+  heavy: 'heavy',
+}
+
+const KIND_META: Record<WeekLoadItem['kind'], { label: string; tone: string }> = {
+  EXAM: { label: 'Exam', tone: 'text-accent-strong' },
+  QUIZ: { label: 'Quiz', tone: 'text-mustard-ink' },
+  GRADED: { label: 'Graded', tone: 'text-ink-muted' },
+  TASK: { label: 'Task', tone: 'text-ink-muted' },
+}
+
+const fmtWeight = (w: number) => `${Number.isInteger(w) ? w : Number(w.toFixed(1))}% of grade`
 
 const MAX_WEEKS = 16
 
@@ -25,6 +103,7 @@ interface Report {
   tasks: { completed: number; open: number; overdue: number; onTime: number; late: number; doneRate: number | null }
   habits: { overall: number | null; rows: { id: number; name: string; pct: number | null; streak: number }[] }
   weightedAvg: number | null
+  accuracy: GuessAccuracy
   empty: boolean
 }
 
@@ -116,6 +195,8 @@ function buildReport(db: LocalDB, now: Date): Report {
     }
   }
 
+  const accuracy = guessAccuracy([...db.courses, ...db.pastSemesters.flatMap((s) => s.courses)])
+
   return {
     start,
     end,
@@ -133,7 +214,8 @@ function buildReport(db: LocalDB, now: Date): Report {
     },
     habits: { overall: pct(doneAll, possibleAll), rows: habitRows },
     weightedAvg: credits > 0 ? sum / credits : null,
-    empty: db.courses.length === 0 && db.studySessions.length === 0 && db.habits.length === 0 && db.tasks.length === 0,
+    accuracy,
+    empty: db.courses.length === 0 && db.studySessions.length === 0 && db.habits.length === 0 && db.tasks.length === 0 && accuracy.count === 0,
   }
 }
 
@@ -141,6 +223,78 @@ export function AnalyticsPage() {
   const { db, data } = useAppData()
   const r = useMemo(() => buildReport(db, new Date()), [db])
   const courses = useMemo(() => new Map((data?.courses ?? []).map((c) => [c.id, c])), [data])
+  const load = useMemo(() => semesterLoad(db), [db])
+  const currentWeek = weekStart(todayKey())
+  const [pickedWeek, setPickedWeek] = useState<string | null>(null)
+
+  const defaultWeekStart = useMemo(() => {
+    if (!load || load.weeks.length === 0) return null
+    const nextHeavy = load.weeks.find((w) => w.week_start >= currentWeek && loadLevel(w.score, load.max) === 'heavy')
+    if (nextHeavy) return nextHeavy.week_start
+    const cur = load.weeks.find((w) => w.week_start === currentWeek)
+    return cur ? cur.week_start : load.weeks[0].week_start
+  }, [load, currentWeek])
+
+  const selectedWeek =
+    load?.weeks.find((w) => w.week_start === pickedWeek) ??
+    load?.weeks.find((w) => w.week_start === defaultWeekStart) ??
+    null
+
+  const heatmap = useMemo(() => {
+    const now = new Date()
+    const today = todayKey(now)
+    const fromKey =
+      db.semester && /^\d{4}-\d{2}-\d{2}$/.test(db.semester.start_date) && db.semester.start_date <= today
+        ? db.semester.start_date
+        : addDays(weekStart(today), -15 * 7)
+    const days = dailyActivity(db, fromKey, today, now)
+    const byDate = new Map(days.map((d) => [d.date, d]))
+
+    let activeDays = 0
+    let bestStreak = 0
+    let run = 0
+    for (const d of days) {
+      if (d.score > 0) {
+        activeDays++
+        run++
+        if (run > bestStreak) bestStreak = run
+      } else {
+        run = 0
+      }
+    }
+    let currentStreak = 0
+    let i = days.length - 1
+    if (i >= 0 && days[i].score === 0) i--
+    while (i >= 0 && days[i].score > 0) {
+      currentStreak++
+      i--
+    }
+
+    const rawCols: { week: string; slots: { date: string; data: DayActivity | null }[]; firstOfMonth: string | null }[] = []
+    for (let w = weekStart(fromKey); w <= weekStart(today); w = addDays(w, 7)) {
+      const slots = Array.from({ length: 7 }, (_, offset) => {
+        const date = addDays(w, offset)
+        return { date, data: byDate.get(date) ?? null }
+      })
+      const firstDay = slots.find((s) => s.data !== null && s.date.endsWith('-01'))
+      rawCols.push({ week: w, slots, firstOfMonth: firstDay ? shortMonth(firstDay.date) : null })
+    }
+
+    const cols = rawCols.map((col, idx) => ({
+      week: col.week,
+      slots: col.slots,
+      monthLabel:
+        col.firstOfMonth ?? (idx === 0 && !rawCols[1]?.firstOfMonth ? shortMonth(fromKey) : ''),
+    }))
+
+    return { cols, activeDays, totalDays: days.length, currentStreak, bestStreak }
+  }, [db])
+
+  const heatmapScrollRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const el = heatmapScrollRef.current
+    if (el) el.scrollLeft = el.scrollWidth
+  }, [heatmap.cols.length])
 
   const target = db.settings.weekly_study_target_minutes
   const period = `${shortDate(r.start)} – ${shortDate(r.end)}`
@@ -335,6 +489,236 @@ export function AnalyticsPage() {
               </p>
             </div>
           )}
+        </RecordCard>
+
+        <RecordCard>
+          <SectionHeader index="05" title="Guess accuracy" meta="All semesters" />
+          {r.accuracy.count === 0 ? (
+            <EmptyState
+              title="No guesses compared yet"
+              body="Add an expected score before a result comes out, then the real score, to see how good your guesses are."
+            />
+          ) : (
+            (() => {
+              const meanGap = r.accuracy.meanGap ?? 0
+              const meanAbsGap = r.accuracy.meanAbsGap ?? 0
+              const roundedGap = Math.abs(meanGap) < 0.05 ? 0 : meanGap
+              const signedGap = `${roundedGap >= 0 ? '+' : ''}${roundedGap.toFixed(1)} pts`
+              const gapTone = meanGap >= 0 ? 'text-sage-ink' : meanGap < -5 ? 'text-danger' : 'text-ink'
+              const summaryLine =
+                roundedGap === 0
+                  ? 'Your guesses are right on average.'
+                  : roundedGap > 0
+                    ? `You usually score ${roundedGap.toFixed(1)} pts above your guesses.`
+                    : `You usually score ${Math.abs(roundedGap).toFixed(1)} pts below your guesses.`
+              return (
+                <div className="px-4 sm:px-5 py-4 flex flex-col gap-4">
+                  <dl className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div>
+                      <dt className="micro">Items compared</dt>
+                      <dd className="tabular text-xl text-ink mt-1">{r.accuracy.count}</dd>
+                    </div>
+                    <div>
+                      <dt className="micro">Mean gap</dt>
+                      <dd className={`tabular text-xl mt-1 ${gapTone}`}>{signedGap}</dd>
+                    </div>
+                    <div>
+                      <dt className="micro">Mean abs gap</dt>
+                      <dd className="tabular text-xl text-ink mt-1">{meanAbsGap.toFixed(1)} pts</dd>
+                    </div>
+                  </dl>
+                  <p className="text-[13px] text-ink-muted">{summaryLine}</p>
+                </div>
+              )
+            })()
+          )}
+        </RecordCard>
+
+        <RecordCard>
+          <SectionHeader index="06" title="Semester load" meta="Exams, graded work and tasks per week" />
+          {!load ? (
+            <EmptyState code="NO TERM DATES" title="Set the semester dates to see your workload by week." />
+          ) : load.max === 0 ? (
+            <EmptyState code="NOTHING SCHEDULED" title="Nothing scheduled yet." />
+          ) : (
+            <>
+              <div className="px-4 sm:px-5 py-4 flex flex-col gap-3">
+                <div className="grid grid-cols-8 lg:grid-cols-[repeat(auto-fit,minmax(36px,1fr))] gap-1.5">
+                  {load.weeks.map((w) => {
+                    const lvl = loadLevel(w.score, load.max)
+                    const isCurrent = w.week_start === currentWeek
+                    const isSelected = selectedWeek?.week_start === w.week_start
+                    return (
+                      <div key={w.week_start} className="flex flex-col items-center gap-1 min-w-0">
+                        <button
+                          type="button"
+                          onClick={() => setPickedWeek(w.week_start)}
+                          aria-pressed={isSelected}
+                          aria-label={`Week ${w.index}, ${w.items.length} ${w.items.length === 1 ? 'item' : 'items'}, ${LOAD_LABEL[lvl]}`}
+                          className={
+                            'w-full h-9 rounded-xs border tabular text-[11px] font-medium grid place-items-center cursor-pointer transition-colors ' +
+                            LOAD_CELL_CLASS[lvl] +
+                            (isCurrent ? ' ring-2 ring-accent ring-offset-1 ring-offset-surface' : '') +
+                            (isSelected ? ' outline-2 outline-ink -outline-offset-2' : '')
+                          }
+                        >
+                          {w.items.length > 0 ? w.items.length : ''}
+                        </button>
+                        <span
+                          className={`tabular text-[10.5px] leading-none ${
+                            isSelected ? 'text-ink font-semibold' : 'text-ink-muted'
+                          }`}
+                        >
+                          W{w.index}
+                        </span>
+                        {isCurrent && (
+                          <span className="tabular text-[9.5px] uppercase tracking-wider text-accent-strong leading-none">
+                            now
+                          </span>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] text-ink-muted">
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="w-3 h-3 rounded-[2px] border bg-accent-wash border-border" aria-hidden="true" />
+                    Light
+                  </span>
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="w-3 h-3 rounded-[2px] border bg-mustard-wash border-mustard" aria-hidden="true" />
+                    Medium
+                  </span>
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="w-3 h-3 rounded-[2px] border bg-danger-wash border-danger" aria-hidden="true" />
+                    Heavy
+                  </span>
+                </div>
+              </div>
+
+              {selectedWeek && (
+                <div className="border-t border-rule">
+                  <div className="px-4 sm:px-5 py-2.5 bg-surface-sunken border-b border-rule flex flex-wrap items-center justify-between gap-2">
+                    <span className="tabular text-[12px] font-medium text-ink">
+                      Week {selectedWeek.index} · {shortDate(selectedWeek.week_start)} – {shortDate(addDays(selectedWeek.week_start, 6))}
+                    </span>
+                    <span className="tabular text-[12px] text-ink-muted">
+                      {selectedWeek.items.length} {selectedWeek.items.length === 1 ? 'item' : 'items'}
+                    </span>
+                  </div>
+                  {selectedWeek.items.length === 0 ? (
+                    <p className="px-4 sm:px-5 py-3 text-[13px] text-ink-muted">Nothing due this week.</p>
+                  ) : (
+                    <ul className="divide-y divide-rule">
+                      {selectedWeek.items.map((item, idx) => {
+                        const course = item.course_id !== null ? courses.get(item.course_id) : undefined
+                        const meta = KIND_META[item.kind]
+                        return (
+                          <li
+                            key={`${item.kind}-${item.course_id ?? 'none'}-${item.date}-${item.title}-${idx}`}
+                            className="px-4 sm:px-5 py-2.5 flex items-start justify-between gap-3"
+                          >
+                            <div className="min-w-0 flex-1">
+                              <div className="font-medium text-ink leading-snug break-words">{item.title}</div>
+                              <div className="mt-0.5 flex flex-wrap items-center gap-x-2 tabular text-[12px] text-ink-muted">
+                                <span>{shortDate(item.date)}</span>
+                                <span>·</span>
+                                <span className={meta.tone}>{meta.label}</span>
+                                {course && (
+                                  <>
+                                    <span>·</span>
+                                    <span className="inline-flex items-center gap-1.5">
+                                      <span className="w-2 h-2 rounded-[1px]" style={{ background: course.color }} aria-hidden="true" />
+                                      {course.code}
+                                    </span>
+                                  </>
+                                )}
+                                {item.kind === 'GRADED' && item.weight !== null && (
+                                  <>
+                                    <span>·</span>
+                                    <span>{fmtWeight(item.weight)}</span>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                          </li>
+                        )
+                      })}
+                    </ul>
+                  )}
+                </div>
+              )}
+            </>
+          )}
+        </RecordCard>
+
+        <RecordCard>
+          <SectionHeader index="07" title="Consistency" meta="Study, tasks and habits per day" />
+          <div className="px-4 sm:px-5 py-4 flex flex-col gap-3">
+            <div ref={heatmapScrollRef} className="overflow-x-auto pb-1">
+              <div
+                className="inline-flex flex-col gap-1.5"
+                role="img"
+                aria-label={`Active on ${heatmap.activeDays} of ${heatmap.totalDays} days`}
+              >
+                <div className="flex items-end gap-[3px]">
+                  <span className="w-7 shrink-0" aria-hidden="true" />
+                  {heatmap.cols.map((col) => (
+                    <div key={col.week} className="w-[12px] shrink-0 overflow-visible h-3.5 flex items-end">
+                      {col.monthLabel && (
+                        <span className="micro !text-[9.5px] leading-none whitespace-nowrap">{col.monthLabel}</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                <div className="flex gap-[3px]">
+                  <div className="w-7 shrink-0 flex flex-col gap-[3px]" aria-hidden="true">
+                    {WEEKDAY_LABELS.map((lbl, idx) => (
+                      <span
+                        key={idx}
+                        className="micro !text-[9.5px] h-[12px] leading-[12px] text-right pr-1.5"
+                      >
+                        {lbl}
+                      </span>
+                    ))}
+                  </div>
+                  {heatmap.cols.map((col) => (
+                    <div key={col.week} className="flex flex-col gap-[3px] shrink-0">
+                      {col.slots.map((slot) =>
+                        slot.data ? (
+                          <span
+                            key={slot.date}
+                            title={dayTooltip(slot.data)}
+                            className={`w-[12px] h-[12px] rounded-[2px] ${ACTIVITY_CLASS[activityLevel(slot.data.score)]}`}
+                          />
+                        ) : (
+                          <span key={slot.date} className="w-[12px] h-[12px]" aria-hidden="true" />
+                        ),
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+              <p className="tabular text-[12px] text-ink-muted">
+                Active on <span className="text-ink">{heatmap.activeDays}</span> of{' '}
+                <span className="text-ink">{heatmap.totalDays}</span> {heatmap.totalDays === 1 ? 'day' : 'days'} · current
+                streak <span className="text-ink">{heatmap.currentStreak}</span>{' '}
+                {heatmap.currentStreak === 1 ? 'day' : 'days'} · best streak{' '}
+                <span className="text-ink">{heatmap.bestStreak}</span> {heatmap.bestStreak === 1 ? 'day' : 'days'}
+              </p>
+              <div className="flex items-center gap-1.5 text-[11.5px] text-ink-muted shrink-0" aria-hidden="true">
+                <span>Less</span>
+                {([0, 1, 2, 3, 4] as const).map((lvl) => (
+                  <span key={lvl} className={`w-[11px] h-[11px] rounded-[2px] ${ACTIVITY_CLASS[lvl]}`} />
+                ))}
+                <span>More</span>
+              </div>
+            </div>
+          </div>
         </RecordCard>
 
         <GradeStandingTable standings={data?.grade_standing ?? []} courses={courses} />

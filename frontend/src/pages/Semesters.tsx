@@ -1,12 +1,41 @@
-import { ChevronDown, ChevronRight, Flag, Trash2 } from 'lucide-react'
-import { useState } from 'react'
+import { ChevronDown, ChevronRight, Flag, RotateCcw, Trash2 } from 'lucide-react'
+import { useMemo, useState } from 'react'
 import { Button } from '../components/ui/Button'
+import { FormField } from '../components/ui/FormField'
 import { Modal } from '../components/ui/Overlay'
 import { EmptyState, PageHeader, RecordCard, SectionHeader, StatCard } from '../components/ui/Panels'
-import { archiveCurrentSemester, courseGrade, DEFAULT_SCALE, gpaOf, type LArchivedSemester, type LCourse } from '../lib/localDb'
+import {
+  archiveCurrentSemester,
+  courseGrade,
+  DEFAULT_SCALE,
+  expectedGpaOf,
+  gpaOf,
+  isSU,
+  requiredSemesterGpa,
+  whatIfGpa,
+  type LArchivedSemester,
+  type LCourse,
+} from '../lib/localDb'
 import { useAppData } from '../lib/store'
 
 const fmtGpa = (g: number | null) => (g === null ? '—' : g.toFixed(2))
+
+function nearestDefaultLetter(point: number): string | null {
+  const asc = [...DEFAULT_SCALE]
+    .filter((b) => b.grade_point !== '' && Number.isFinite(Number(b.grade_point)))
+    .sort((a, b) => Number(a.grade_point) - Number(b.grade_point))
+  return asc.find((b) => Number(b.grade_point) >= point - 1e-9)?.grade_label ?? null
+}
+
+function formatDelta(simVal: number | null, realVal: number | null): { text: string; tone: string } | null {
+  if (simVal === null || realVal === null) return null
+  const diff = Math.round((simVal - realVal) * 100) / 100
+  if (diff === 0) return null
+  return {
+    text: `${diff > 0 ? '+' : ''}${diff.toFixed(2)}`,
+    tone: diff > 0 ? 'text-sage-ink' : 'text-danger',
+  }
+}
 
 /** Courses of one semester with an editable official grade each. */
 function CourseRows({ courses, onGrade }: { courses: LCourse[]; onGrade: (courseId: number, value: string | null) => void }) {
@@ -34,6 +63,9 @@ function CourseRows({ courses, onGrade }: { courses: LCourse[]; onGrade: (course
                 {g.point !== null && <span className="text-ink-muted text-[12px]"> · {g.point.toFixed(2)}</span>}
               </div>
               <div className="micro text-ink-faint">{g.su ? `S/U · not in GPA${g.source ? ` · ${g.source}` : ''}` : g.source ?? 'no grade'}</div>
+              {g.point === 0 && g.letter && g.letter.trim().toUpperCase() !== 'F' && (
+                <div className="text-[11.5px] text-danger">{g.letter} is worth 0 points on this course&apos;s scale. Fix it in the Gradebook.</div>
+              )}
             </div>
             <label className="flex items-center gap-2 shrink-0">
               <span className="micro">Official grade</span>
@@ -104,12 +136,40 @@ function PastSemester({
 export function SemestersPage() {
   const { db, mutate } = useAppData()
   const [finishing, setFinishing] = useState(false)
+  const [picks, setPicks] = useState<Record<number, string | null>>({})
+  const [targetText, setTargetText] = useState('')
 
+  const pastCourses = useMemo(() => db.pastSemesters.flatMap((s) => s.courses), [db.pastSemesters])
   const current = gpaOf(db.courses)
-  const all = gpaOf([...db.pastSemesters.flatMap((s) => s.courses), ...db.courses])
+  const expected = expectedGpaOf(db.courses)
+  const all = gpaOf([...pastCourses, ...db.courses])
   const past = [...db.pastSemesters].sort(
     (a, b) => b.end_date.localeCompare(a.end_date) || b.archived_on.localeCompare(a.archived_on) || b.id - a.id,
   )
+
+  const simCourses = useMemo(() => db.courses.filter((c) => !isSU(c)), [db.courses])
+  const sim = useMemo(() => whatIfGpa(pastCourses, db.courses, picks), [pastCourses, db.courses, picks])
+  const hasPicks = Object.values(picks).some((v) => v !== null && v !== '')
+  const semDelta = formatDelta(sim.semester, current.gpa)
+  const cumDelta = formatDelta(sim.cumulative, all.gpa)
+
+  const targetNum = targetText.trim() !== '' ? Number(targetText) : NaN
+  const targetValid = Number.isFinite(targetNum) && targetNum >= 0 && targetNum <= 4
+  const req = useMemo(
+    () => (targetValid ? requiredSemesterGpa(pastCourses, db.courses, targetNum) : null),
+    [targetValid, pastCourses, db.courses, targetNum],
+  )
+  const maxCumulative = useMemo(() => {
+    const bestPicks: Record<number, string | null> = {}
+    for (const c of simCourses) {
+      const bands = (c.scale.length ? c.scale : DEFAULT_SCALE).filter(
+        (b) => b.grade_point !== '' && Number.isFinite(Number(b.grade_point)),
+      )
+      const top = [...bands].sort((a, b) => Number(b.grade_point) - Number(a.grade_point))[0]
+      if (top) bestPicks[c.id] = top.grade_label
+    }
+    return whatIfGpa(pastCourses, db.courses, bestPicks).cumulative
+  }, [pastCourses, db.courses, simCourses])
 
   const gradeCurrent = (id: number, value: string | null) =>
     mutate((d) => {
@@ -144,8 +204,9 @@ export function SemestersPage() {
       />
 
       <div className="flex flex-col gap-4 lg:gap-5">
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           <StatCard label="Current semester GPA" value={fmtGpa(current.gpa)} detail="Projected" tone="accent" />
+          <StatCard label="Expected semester GPA" value={fmtGpa(expected.gpa)} detail="If your expectations come true" tone="mustard" />
           <StatCard label="Cumulative GPA" value={fmtGpa(all.gpa)} detail="Past semesters and current" tone="mustard" />
           <StatCard label="Credits counted" value={all.credits} unit="cr" detail={`${all.counted} courses`} tone="sage" />
         </div>
@@ -182,7 +243,123 @@ export function SemestersPage() {
             </RecordCard>
 
             <RecordCard>
-              <SectionHeader index="02" title="Past semesters" />
+              <SectionHeader
+                index="02"
+                title="What if…"
+                meta="Sandbox · not saved"
+                action={
+                  simCourses.length > 0 ? (
+                    <Button size="sm" variant="ghost" icon={<RotateCcw size={14} />} disabled={!hasPicks} onClick={() => setPicks({})}>
+                      Reset
+                    </Button>
+                  ) : undefined
+                }
+              />
+              {db.courses.length === 0 ? (
+                <EmptyState code="NO CURRENT COURSES" title="No courses this semester" body="Add courses to simulate your GPA." />
+              ) : simCourses.length === 0 ? (
+                <EmptyState code="S/U ONLY" title="No GPA-counted courses" body="S/U courses do not count toward your GPA." />
+              ) : (
+                <>
+                  <ul className="divide-y divide-rule">
+                    {simCourses.map((c) => {
+                      const g = courseGrade(c)
+                      const bands = c.scale.length ? c.scale : DEFAULT_SCALE
+                      const pick = picks[c.id] ?? ''
+                      return (
+                        <li key={c.id} className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 px-4 sm:px-5 py-3">
+                          <div className="flex items-center gap-3 min-w-0 flex-1">
+                            <span className="w-[3px] h-8 rounded-[1px] shrink-0" style={{ background: c.color }} aria-hidden="true" />
+                            <div className="min-w-0 flex-1">
+                              <div className="tabular text-[12px] text-ink-muted">
+                                {c.code} · {c.credits} cr
+                              </div>
+                              <div className="font-medium text-ink truncate">{c.name}</div>
+                            </div>
+                          </div>
+                          <div className="flex items-center justify-between sm:justify-end gap-3 shrink-0 pl-4 sm:pl-0">
+                            <span className="tabular text-[12px] text-ink-muted">now {g.letter ?? '—'}</span>
+                            <select
+                              aria-label={`What-if grade for ${c.code}`}
+                              value={pick}
+                              onChange={(e) => {
+                                const val = e.target.value || null
+                                setPicks((prev) => ({ ...prev, [c.id]: val }))
+                              }}
+                              className="h-9 px-2 bg-surface border border-border rounded-xs text-ink tabular focus:outline-none focus:border-accent"
+                            >
+                              <option value="">—</option>
+                              {bands.map((b) => (
+                                <option key={b.grade_label} value={b.grade_label}>
+                                  {b.grade_label}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        </li>
+                      )
+                    })}
+                  </ul>
+
+                  <div className="px-4 sm:px-5 py-3 border-t border-rule bg-surface-sunken flex flex-wrap items-baseline gap-x-4 gap-y-1 tabular text-[14px]">
+                    <span className="text-ink-muted">
+                      Semester GPA <strong className="font-semibold text-ink">{fmtGpa(sim.semester)}</strong>
+                      {semDelta && <span className={`ml-1.5 text-[12.5px] font-medium ${semDelta.tone}`}>({semDelta.text})</span>}
+                    </span>
+                    <span className="text-ink-muted" aria-hidden="true">
+                      ·
+                    </span>
+                    <span className="text-ink-muted">
+                      Cumulative <strong className="font-semibold text-ink">{fmtGpa(sim.cumulative)}</strong>
+                      {cumDelta && <span className={`ml-1.5 text-[12.5px] font-medium ${cumDelta.tone}`}>({cumDelta.text})</span>}
+                    </span>
+                  </div>
+
+                  <div className="px-4 sm:px-5 py-4 border-t border-rule flex flex-col sm:flex-row sm:items-end gap-3 sm:gap-4">
+                    <FormField
+                      label="Target cumulative GPA"
+                      type="number"
+                      inputMode="decimal"
+                      mono
+                      min={0}
+                      max={4}
+                      step="0.01"
+                      placeholder="3.25"
+                      className="w-full sm:w-44"
+                      value={targetText}
+                      onChange={(e) => setTargetText(e.target.value)}
+                    />
+                    <div className="text-[13.5px] text-ink-muted sm:pb-2.5 min-w-0">
+                      {!targetText.trim() ? (
+                        'Enter a target GPA to see what average you need this semester.'
+                      ) : !targetValid ? (
+                        <span className="text-danger">Enter a number from 0 to 4.</span>
+                      ) : req?.status === 'secured' ? (
+                        <span className="text-sage-ink">Already secured.</span>
+                      ) : req?.status === 'impossible' ? (
+                        <span className="text-danger">
+                          Out of reach this semester{maxCumulative !== null ? ` (max ${maxCumulative.toFixed(2)})` : ''}.
+                        </span>
+                      ) : req && req.needed !== null ? (
+                        <>
+                          You need an average of <strong className="tabular font-semibold text-ink">{req.needed.toFixed(2)}</strong> this
+                          semester
+                          {(() => {
+                            const letter = nearestDefaultLetter(req.needed)
+                            return letter ? ` (about ${letter}).` : '.'
+                          })()}
+                        </>
+                      ) : (
+                        'Add GPA-counted courses with credits to calculate.'
+                      )}
+                    </div>
+                  </div>
+                </>
+              )}
+            </RecordCard>
+
+            <RecordCard>
+              <SectionHeader index="03" title="Past semesters" />
               {past.length === 0 ? (
                 <EmptyState code="NOTHING ARCHIVED" title="No past semesters" body="Finish a semester to keep its grades here." />
               ) : (

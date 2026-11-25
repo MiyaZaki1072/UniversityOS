@@ -3,6 +3,8 @@ import { Fragment } from 'react'
 import { Link } from 'react-router-dom'
 import type { CourseRef, Occurrence } from '../../lib/types'
 import { formatTime } from '../../lib/format'
+import { setAttendance, type AttendanceStatus } from '../../lib/localDb'
+import { useAppData } from '../../lib/store'
 import { RecordCard, SectionHeader, EmptyState } from '../../components/ui/Panels'
 import { StatusStamp } from '../../components/ui/StatusStamp'
 
@@ -34,7 +36,25 @@ function kindLabel(o: Occurrence) {
   return o.event_type ?? 'EVENT'
 }
 
-function Row({ o, course, phase }: { o: Occurrence; course?: CourseRef; phase: Phase }) {
+function parseClassOccurrenceId(id: string): { meetingId: number; date: string } | null {
+  const match = /^class-(\d+)-(\d{4}-\d{2}-\d{2})$/.exec(id)
+  if (!match) return null
+  return { meetingId: Number(match[1]), date: match[2] }
+}
+
+function Row({
+  o,
+  course,
+  phase,
+  attendanceStatus,
+  onMark,
+}: {
+  o: Occurrence
+  course?: CourseRef
+  phase: Phase
+  attendanceStatus?: AttendanceStatus | null
+  onMark?: (status: AttendanceStatus) => void
+}) {
   const past = phase === 'past'
 
   return (
@@ -82,6 +102,46 @@ function Row({ o, course, phase }: { o: Occurrence; course?: CourseRef; phase: P
             {o.location}
           </div>
         )}
+        {onMark && (
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => onMark('PRESENT')}
+              aria-pressed={attendanceStatus === 'PRESENT'}
+              className={
+                'h-7 px-2 rounded-xs border text-[12px] font-medium cursor-pointer transition-colors ' +
+                (attendanceStatus === 'PRESENT'
+                  ? 'bg-sage-wash text-sage-ink border-sage'
+                  : 'bg-surface-sunken text-ink-muted border-border hover:border-border-strong hover:text-ink')
+              }
+            >
+              Present
+            </button>
+            <button
+              type="button"
+              onClick={() => onMark('ABSENT')}
+              aria-pressed={attendanceStatus === 'ABSENT'}
+              className={
+                'h-7 px-2 rounded-xs border text-[12px] font-medium cursor-pointer transition-colors ' +
+                (attendanceStatus === 'ABSENT'
+                  ? 'bg-danger-wash text-danger border-danger'
+                  : 'bg-surface-sunken text-ink-muted border-border hover:border-border-strong hover:text-ink')
+              }
+            >
+              Absent
+            </button>
+            {attendanceStatus === 'LATE' && (
+              <span className="h-7 px-2 inline-flex items-center rounded-xs border border-mustard bg-mustard-wash text-mustard-ink text-[12px] font-medium">
+                Late
+              </span>
+            )}
+            {attendanceStatus === 'EXCUSED' && (
+              <span className="h-7 px-2 inline-flex items-center rounded-xs border border-border-strong bg-surface-2 text-ink text-[12px] font-medium">
+                Excused
+              </span>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="shrink-0 self-center">
@@ -106,6 +166,7 @@ function NowRule({ now }: { now: Date }) {
 
 /** Today's classes and events as one chronological schedule record. */
 export function TodayDocket({ items, courses, now, dateLabel, showNow, dueToday, index }: TodayDocketProps) {
+  const { db, mutate } = useAppData()
   const sorted = [...items].sort((a, b) => a.start_at.localeCompare(b.start_at))
   // The "now" rule sits after everything that has already started (an in-session class stays above it).
   const nowIdx = sorted.findIndex((o) => new Date(o.start_at).getTime() > now.getTime())
@@ -121,12 +182,39 @@ export function TodayDocket({ items, courses, now, dateLabel, showNow, dueToday,
         </div>
       ) : (
         <ol className="divide-y divide-rule flex-1">
-          {sorted.map((o, i) => (
-            <Fragment key={o.id}>
-              {i === insertAt && <NowRule now={now} />}
-              <Row o={o} course={o.course_id ? courses.get(o.course_id) : undefined} phase={phaseOf(o, now)} />
-            </Fragment>
-          ))}
+          {sorted.map((o, i) => {
+            const phase = phaseOf(o, now)
+            const parsed = o.source_type === 'class_meeting' && phase !== 'upcoming' ? parseClassOccurrenceId(o.id) : null
+            const localCourse = parsed && o.course_id !== null ? db.courses.find((c) => c.id === o.course_id) : undefined
+            const canCheckIn = Boolean(localCourse && parsed && localCourse.meetings.some((m) => m.id === parsed.meetingId))
+            const attendanceStatus =
+              canCheckIn && localCourse && parsed
+                ? (localCourse.attendance?.find((r) => r.meeting_id === parsed.meetingId && r.date === parsed.date)?.status ?? null)
+                : null
+            const onMark =
+              canCheckIn && localCourse && parsed
+                ? (status: AttendanceStatus) => {
+                    const next = attendanceStatus === status ? null : status
+                    mutate((d) => {
+                      const c = d.courses.find((x) => x.id === localCourse.id)
+                      if (c) setAttendance(c, parsed.meetingId, parsed.date, next)
+                    })
+                  }
+                : undefined
+
+            return (
+              <Fragment key={o.id}>
+                {i === insertAt && <NowRule now={now} />}
+                <Row
+                  o={o}
+                  course={o.course_id ? courses.get(o.course_id) : undefined}
+                  phase={phase}
+                  attendanceStatus={attendanceStatus}
+                  onMark={onMark}
+                />
+              </Fragment>
+            )
+          })}
           {insertAt === sorted.length && <NowRule now={now} />}
         </ol>
       )}
