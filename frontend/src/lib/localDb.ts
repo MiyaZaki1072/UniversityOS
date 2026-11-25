@@ -903,6 +903,74 @@ export function topicStats(c: LCourse, today: string): TopicStats {
   return { total: topics.length, red, amber, green, unrated, due }
 }
 
+export interface PrepDay {
+  date: string // YYYY-MM-DD
+  topicIds: number[]
+  mock: boolean
+}
+
+const PREP_RANK: Record<Confidence, number> = { RED: 0, AMBER: 2, GREEN: 3 }
+const prepRank = (c: Confidence | null) => (c === null ? 1 : PREP_RANK[c])
+
+/** Spread topics backward from an exam date (weakest first), reserving trailing buffer days for mocks. */
+export function examPrepPlan(topics: LTopic[], startDate: string, examDate: string, bufferDays: number): PrepDay[] {
+  if (!isDateKey(startDate) || !isDateKey(examDate)) return []
+  const buf = Math.max(0, Math.min(3, Math.floor(Number.isFinite(bufferDays) ? bufferDays : 0)))
+  const lastStudyDay = addDays(examDate, -1 - buf)
+
+  const studyDates: string[] = []
+  if (startDate <= lastStudyDay) {
+    for (let d = startDate; d <= lastStudyDay; d = addDays(d, 1)) {
+      studyDates.push(d)
+    }
+  }
+
+  const ordered = [...topics].sort((a, b) => {
+    const r = prepRank(a.confidence) - prepRank(b.confidence)
+    if (r !== 0) return r
+    if (!a.last_reviewed && b.last_reviewed) return -1
+    if (a.last_reviewed && !b.last_reviewed) return 1
+    if (a.last_reviewed && b.last_reviewed) {
+      const cmp = a.last_reviewed.localeCompare(b.last_reviewed)
+      if (cmp !== 0) return cmp
+    }
+    return a.id - b.id
+  })
+
+  const days: PrepDay[] = []
+  if (studyDates.length > 0 && ordered.length > 0) {
+    const buckets: number[][] = studyDates.map(() => [])
+    for (let i = 0; i < ordered.length; i++) {
+      const dayIdx = i % studyDates.length
+      const tid = ordered[i].id
+      if (!buckets[dayIdx].includes(tid)) buckets[dayIdx].push(tid)
+    }
+    if (studyDates.length > ordered.length) {
+      const weak = ordered.filter((t) => t.confidence === 'RED' || t.confidence === null)
+      let dayIdx = ordered.length
+      for (const t of weak) {
+        if (dayIdx >= studyDates.length) break
+        if (!buckets[dayIdx].includes(t.id)) buckets[dayIdx].push(t.id)
+        dayIdx++
+      }
+    }
+    for (let i = 0; i < studyDates.length; i++) {
+      if (buckets[i].length > 0) {
+        days.push({ date: studyDates[i], topicIds: buckets[i], mock: false })
+      }
+    }
+  }
+
+  for (let i = buf; i >= 1; i--) {
+    const d = addDays(examDate, -i)
+    if (d >= startDate && d < examDate) {
+      days.push({ date: d, topicIds: [], mock: true })
+    }
+  }
+
+  return days
+}
+
 /* ------------------------------------------------------------------ */
 /* Weekly reviews                                                      */
 /* ------------------------------------------------------------------ */

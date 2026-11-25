@@ -12,7 +12,7 @@ import {
   Plus,
   Trash2,
 } from 'lucide-react'
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { Button } from '../components/ui/Button'
 import { FormField } from '../components/ui/FormField'
@@ -28,6 +28,7 @@ import {
   courseSessions,
   DEFAULT_SCALE,
   dueTopics,
+  examPrepPlan,
   isSU,
   reviewTopic,
   setAttendance,
@@ -46,6 +47,7 @@ import {
   type LExam,
   type LMeeting,
   type LTopic,
+  type TaskPriority,
 } from '../lib/localDb'
 import { useAppData } from '../lib/store'
 
@@ -405,6 +407,242 @@ function ExamFormModal({ open, onClose, courseId, exam }: { open: boolean; onClo
   )
 }
 
+const CONFIDENCE_DOT: Record<Confidence, string> = {
+  RED: 'bg-danger',
+  AMBER: 'bg-mustard',
+  GREEN: 'bg-sage',
+}
+
+function ExamPrepModal({
+  open,
+  onClose,
+  course,
+  exam,
+  onCreated,
+}: {
+  open: boolean
+  onClose: () => void
+  course: LCourse
+  exam: LExam | null
+  onCreated: (created: number, skipped: number) => void
+}) {
+  const { db, mutate } = useAppData()
+  const [startDate, setStartDate] = useState('')
+  const [bufferDays, setBufferDays] = useState('1')
+  const [checkedIds, setCheckedIds] = useState<Set<number>>(() => new Set())
+
+  const topics = useMemo(() => course.topics ?? [], [course.topics])
+  const examDate = exam ? todayKey(new Date(exam.start_at)) : todayKey()
+
+  useEffect(() => {
+    if (!open || !exam) return
+    const today = todayKey()
+    const exDate = todayKey(new Date(exam.start_at))
+    const weekBefore = addDays(exDate, -7)
+    setStartDate(weekBefore > today ? weekBefore : today)
+    setBufferDays('1')
+    setCheckedIds(new Set((course.topics ?? []).map((t) => t.id)))
+  }, [open, exam, course.topics])
+
+  const topicById = useMemo(() => new Map(topics.map((t) => [t.id, t])), [topics])
+  const selectedTopics = useMemo(() => topics.filter((t) => checkedIds.has(t.id)), [topics, checkedIds])
+  const plan = useMemo(
+    () => (exam && startDate ? examPrepPlan(selectedTopics, startDate, examDate, Number(bufferDays)) : []),
+    [exam, selectedTopics, startDate, examDate, bufferDays],
+  )
+
+  const candidates = useMemo(() => {
+    if (!exam) return []
+    const out: { title: string; date: string; due_at: string; priority: TaskPriority; notes: string }[] = []
+    const notes = `For ${course.code} ${exam.title} on ${examDate}`
+    for (const day of plan) {
+      const due_at = fromLocalInput(`${day.date}T21:00`)!
+      if (day.mock) {
+        out.push({ title: `Past paper: ${exam.title}`, date: day.date, due_at, priority: 'HIGH', notes })
+      } else {
+        for (const tid of day.topicIds) {
+          const t = topicById.get(tid)
+          if (!t) continue
+          out.push({
+            title: `Revise: ${t.title}`,
+            date: day.date,
+            due_at,
+            priority: t.confidence === 'RED' ? 'HIGH' : 'MEDIUM',
+            notes,
+          })
+        }
+      }
+    }
+    return out
+  }, [exam, course.code, examDate, plan, topicById])
+
+  const existingKeys = useMemo(() => {
+    const set = new Set<string>()
+    for (const t of db.tasks) {
+      if (!t.due_at || Number.isNaN(Date.parse(t.due_at))) continue
+      set.add(`${t.title}\0${todayKey(new Date(t.due_at))}`)
+    }
+    return set
+  }, [db.tasks])
+
+  const newCandidates = useMemo(
+    () => candidates.filter((c) => !existingKeys.has(`${c.title}\0${c.date}`)),
+    [candidates, existingKeys],
+  )
+  const skippedCount = candidates.length - newCandidates.length
+
+  const toggleTopic = (id: number) => {
+    setCheckedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const createTasks = () => {
+    if (!exam || candidates.length === 0) return
+    let created = 0
+    let skipped = 0
+    mutate((d, nid) => {
+      const seen = new Set<string>()
+      for (const t of d.tasks) {
+        if (!t.due_at || Number.isNaN(Date.parse(t.due_at))) continue
+        seen.add(`${t.title}\0${todayKey(new Date(t.due_at))}`)
+      }
+      for (const c of candidates) {
+        const key = `${c.title}\0${c.date}`
+        if (seen.has(key)) {
+          skipped++
+          continue
+        }
+        seen.add(key)
+        d.tasks.push({
+          id: nid(),
+          title: c.title,
+          course_id: course.id,
+          due_at: c.due_at,
+          status: 'TODO',
+          priority: c.priority,
+          notes: c.notes,
+          completed_at: null,
+        })
+        created++
+      }
+    })
+    onClose()
+    onCreated(created, skipped)
+  }
+
+  return (
+    <Modal
+      open={open && exam !== null}
+      onClose={onClose}
+      size="lg"
+      label="FORM C-4"
+      title={exam ? `Prep plan · ${exam.title}` : 'Prep plan'}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button variant="primary" disabled={newCandidates.length === 0} onClick={createTasks}>
+            Create {newCandidates.length} {newCandidates.length === 1 ? 'task' : 'tasks'}
+          </Button>
+        </>
+      }
+    >
+      <div className="grid gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <FormField
+            label="Start date"
+            type="date"
+            mono
+            value={startDate}
+            max={examDate}
+            onChange={(e) => setStartDate(e.target.value)}
+          />
+          <SelectField
+            label="Buffer days before exam"
+            value={bufferDays}
+            onChange={(e) => setBufferDays(e.target.value)}
+            options={[
+              { value: '0', label: '0 days (no mock day)' },
+              { value: '1', label: '1 day (past paper)' },
+              { value: '2', label: '2 days (past papers)' },
+            ]}
+          />
+        </div>
+
+        <div className="flex flex-col gap-2">
+          <span className="micro !text-ink">Topics to cover</span>
+          {topics.length === 0 ? (
+            <p className="text-[13px] text-ink-muted">
+              Add topics to this course first to plan your revision. You can still create the mock-paper task below.
+            </p>
+          ) : (
+            <ul className="max-h-44 overflow-y-auto bg-surface-sunken border border-rule rounded-xs divide-y divide-rule">
+              {topics.map((t) => {
+                const checked = checkedIds.has(t.id)
+                const dotClass = t.confidence ? CONFIDENCE_DOT[t.confidence] : 'bg-border-strong'
+                return (
+                  <li key={t.id}>
+                    <label className="flex items-center gap-2.5 px-3 py-2 text-[13.5px] text-ink cursor-pointer hover:bg-surface-2">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleTopic(t.id)}
+                        className="accent-accent shrink-0"
+                      />
+                      <span className={`w-2 h-2 rounded-full shrink-0 ${dotClass}`} aria-hidden="true" />
+                      <span className="min-w-0 flex-1 break-words">{t.title}</span>
+                    </label>
+                  </li>
+                )
+              })}
+            </ul>
+          )}
+        </div>
+
+        <div className="flex flex-col gap-2">
+          <div className="flex items-center justify-between gap-2">
+            <span className="micro !text-ink">Schedule preview</span>
+            {skippedCount > 0 && (
+              <span className="tabular text-[12px] text-ink-muted">{skippedCount} already exist</span>
+            )}
+          </div>
+          {plan.length === 0 ? (
+            <p className="text-[13px] text-ink-muted">No prep days between the start date and the exam.</p>
+          ) : (
+            <ul className="bg-surface-sunken border border-rule rounded-xs divide-y divide-rule">
+              {plan.map((day) => {
+                const label = formatShortDate(`${day.date}T12:00:00+07:00`).replace(',', '')
+                const body = day.mock
+                  ? 'Past paper / mock exam'
+                  : day.topicIds
+                      .map((tid) => topicById.get(tid)?.title ?? '')
+                      .filter(Boolean)
+                      .join(', ')
+                return (
+                  <li key={day.date} className="px-3 py-2 text-[13px] flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                    <span className="tabular font-medium text-ink shrink-0">{label}</span>
+                    <span className="text-ink-muted" aria-hidden="true">
+                      —
+                    </span>
+                    <span className={`min-w-0 break-words ${day.mock ? 'text-accent-strong font-medium' : 'text-ink-muted'}`}>
+                      {body}
+                    </span>
+                  </li>
+                )
+              })}
+            </ul>
+          )}
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
 /* ------------------------------------------------------------------ */
 /* Pages                                                               */
 /* ------------------------------------------------------------------ */
@@ -581,6 +819,11 @@ export function CourseDetailPage() {
   const [editingTopicId, setEditingTopicId] = useState<number | null>(null)
   const [editingTopicTitle, setEditingTopicTitle] = useState('')
   const [questionInput, setQuestionInput] = useState('')
+  const [prepExam, setPrepExam] = useState<LExam | null>(null)
+  const [prepNotice, setPrepNotice] = useState<string | null>(null)
+  const prepNoticeTimer = useRef<number | undefined>(undefined)
+
+  useEffect(() => () => window.clearTimeout(prepNoticeTimer.current), [])
 
   useEffect(() => {
     setShowAllSessions(false)
@@ -590,6 +833,8 @@ export function CourseDetailPage() {
     setEditingTopicId(null)
     setEditingTopicTitle('')
     setQuestionInput('')
+    setPrepExam(null)
+    setPrepNotice(null)
   }, [id])
 
   const today = todayKey()
@@ -766,6 +1011,18 @@ export function CourseDetailPage() {
       const c = d.courses.find((x) => x.id === course.id)
       if (c && c.questions) c.questions = c.questions.filter((x) => x.id !== questionId)
     })
+  }
+
+  const handlePrepCreated = (created: number, skipped: number) => {
+    const msg =
+      created === 0
+        ? 'All planned prep tasks already exist.'
+        : skipped > 0
+          ? `Created ${created} prep ${created === 1 ? 'task' : 'tasks'} (${skipped} already existed).`
+          : `Created ${created} prep ${created === 1 ? 'task' : 'tasks'}.`
+    setPrepNotice(msg)
+    window.clearTimeout(prepNoticeTimer.current)
+    prepNoticeTimer.current = window.setTimeout(() => setPrepNotice(null), 5000)
   }
 
   const s = standingFor(course)
@@ -1163,6 +1420,11 @@ export function CourseDetailPage() {
                 </Button>
               }
             />
+            {prepNotice && (
+              <div role="status" className="px-4 sm:px-5 py-2.5 bg-surface-sunken border-b border-rule text-[13px] text-ink">
+                {prepNotice}
+              </div>
+            )}
             {exams.length === 0 ? (
               <EmptyState code="NO EXAMINATIONS SCHEDULED" title="No exams yet" />
             ) : (
@@ -1180,6 +1442,18 @@ export function CourseDetailPage() {
                           {!past && ` · ${relativeDue(e.start_at)}`}
                         </div>
                       </div>
+                      {!past && (
+                        <button
+                          type="button"
+                          onClick={() => setPrepExam(e)}
+                          aria-label={`Plan prep for ${e.title}`}
+                          title="Plan prep"
+                          className="inline-flex items-center gap-1.5 h-7 px-2 rounded-xs border border-border-strong bg-surface-sunken text-[12px] font-medium text-ink-muted hover:text-ink hover:border-accent shrink-0 cursor-pointer transition-colors"
+                        >
+                          <CalendarCheck size={13} aria-hidden="true" />
+                          <span className="hidden sm:inline">Plan prep</span>
+                        </button>
+                      )}
                       <button onClick={() => setExamForm({ open: true, exam: e })} className="p-1.5 text-ink-muted hover:text-ink" aria-label={`Edit ${e.title}`}>
                         <Pencil size={16} />
                       </button>
@@ -1352,6 +1626,7 @@ export function CourseDetailPage() {
       <CourseFormModal open={editOpen} onClose={() => setEditOpen(false)} course={course} />
       <MeetingFormModal open={meetingForm.open} onClose={() => setMeetingForm({ open: false, meeting: null })} courseId={course.id} meeting={meetingForm.meeting} />
       <ExamFormModal open={examForm.open} onClose={() => setExamForm({ open: false, exam: null })} courseId={course.id} exam={examForm.exam} />
+      <ExamPrepModal open={prepExam !== null} onClose={() => setPrepExam(null)} course={course} exam={prepExam} onCreated={handlePrepCreated} />
     </>
   )
 }
