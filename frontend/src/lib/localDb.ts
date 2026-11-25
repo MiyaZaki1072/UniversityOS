@@ -1427,3 +1427,44 @@ export function applyPlan(db: LocalDB, plan: ImportPlan, makeActive: boolean): {
   })
   return { next, added: added.length, skipped }
 }
+
+/* ------------------------------------------------------------------ */
+/* Daily consistency                                                   */
+/* ------------------------------------------------------------------ */
+
+export interface DayActivity {
+  date: string // YYYY-MM-DD
+  studyMinutes: number
+  tasksDone: number
+  habitsDone: number
+  score: number
+}
+
+/** Daily activity summary for every date in [fromKey, toKey] (inclusive). */
+export function dailyActivity(db: LocalDB, fromKey: string, toKey: string, now: Date = new Date()): DayActivity[] {
+  if (!isDateKey(fromKey) || !isDateKey(toKey) || fromKey > toKey) return []
+
+  const tasksByDate = new Map<string, number>()
+  for (const t of db.tasks) {
+    if (!t.completed_at || Number.isNaN(Date.parse(t.completed_at))) continue
+    const d = todayKey(new Date(t.completed_at))
+    if (d >= fromKey && d <= toKey) tasksByDate.set(d, (tasksByDate.get(d) ?? 0) + 1)
+  }
+
+  const activeHabitIds = new Set(db.habits.filter((h) => !h.archived).map((h) => h.id))
+  const habitsByDate = new Map<string, number>()
+  for (const l of db.habitLogs) {
+    if (!activeHabitIds.has(l.habit_id)) continue
+    if (l.date >= fromKey && l.date <= toKey) habitsByDate.set(l.date, (habitsByDate.get(l.date) ?? 0) + 1)
+  }
+
+  const out: DayActivity[] = []
+  for (let d = fromKey; d <= toKey; d = addDays(d, 1)) {
+    const studyMinutes = studyMinutesOn(db, d, now)
+    const tasksDone = tasksByDate.get(d) ?? 0
+    const habitsDone = habitsByDate.get(d) ?? 0
+    const score = studyMinutes / 30 + tasksDone + habitsDone * 0.5
+    out.push({ date: d, studyMinutes, tasksDone, habitsDone, score })
+  }
+  return out
+}

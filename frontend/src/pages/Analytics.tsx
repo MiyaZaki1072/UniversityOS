@@ -1,9 +1,10 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { CheckCircle2, Clock, Flame, Target } from 'lucide-react'
 import { EmptyState, PageHeader, RecordCard, SectionHeader, StatCard } from '../components/ui/Panels'
 import { formatMinutes } from '../lib/format'
 import {
   addDays,
+  dailyActivity,
   guessAccuracy,
   habitStreak,
   semesterLoad,
@@ -11,12 +12,44 @@ import {
   standingFor,
   todayKey,
   weekStart,
+  type DayActivity,
   type GuessAccuracy,
   type LocalDB,
   type WeekLoadItem,
 } from '../lib/localDb'
 import { useAppData } from '../lib/store'
 import { GradeStandingTable } from './dashboard/GradeStandingTable'
+
+type ActivityLevel = 0 | 1 | 2 | 3 | 4
+
+function activityLevel(score: number): ActivityLevel {
+  if (score <= 0) return 0
+  if (score < 1) return 1
+  if (score < 3) return 2
+  if (score < 6) return 3
+  return 4
+}
+
+const ACTIVITY_CLASS: Record<ActivityLevel, string> = {
+  0: 'bg-surface-sunken border border-rule',
+  1: 'bg-accent-wash border border-border',
+  2: 'bg-accent/45',
+  3: 'bg-accent',
+  4: 'bg-accent-strong',
+}
+
+const WEEKDAY_LABELS = ['Mon', '', 'Wed', '', 'Fri', '', ''] as const
+
+const shortMonth = (key: string) =>
+  new Intl.DateTimeFormat('en-GB', { month: 'short', timeZone: 'UTC' }).format(new Date(`${key}T12:00:00Z`))
+
+function dayTooltip(d: DayActivity): string {
+  const parts: string[] = []
+  if (d.studyMinutes > 0) parts.push(`${formatMinutes(d.studyMinutes)} study`)
+  if (d.tasksDone > 0) parts.push(`${d.tasksDone} ${d.tasksDone === 1 ? 'task' : 'tasks'}`)
+  if (d.habitsDone > 0) parts.push(`${d.habitsDone} ${d.habitsDone === 1 ? 'habit' : 'habits'}`)
+  return parts.length > 0 ? `${shortDate(d.date)} · ${parts.join(', ')}` : `${shortDate(d.date)} · No activity`
+}
 
 type LoadLevel = 'none' | 'light' | 'medium' | 'heavy'
 
@@ -206,6 +239,62 @@ export function AnalyticsPage() {
     load?.weeks.find((w) => w.week_start === pickedWeek) ??
     load?.weeks.find((w) => w.week_start === defaultWeekStart) ??
     null
+
+  const heatmap = useMemo(() => {
+    const now = new Date()
+    const today = todayKey(now)
+    const fromKey =
+      db.semester && /^\d{4}-\d{2}-\d{2}$/.test(db.semester.start_date) && db.semester.start_date <= today
+        ? db.semester.start_date
+        : addDays(weekStart(today), -15 * 7)
+    const days = dailyActivity(db, fromKey, today, now)
+    const byDate = new Map(days.map((d) => [d.date, d]))
+
+    let activeDays = 0
+    let bestStreak = 0
+    let run = 0
+    for (const d of days) {
+      if (d.score > 0) {
+        activeDays++
+        run++
+        if (run > bestStreak) bestStreak = run
+      } else {
+        run = 0
+      }
+    }
+    let currentStreak = 0
+    let i = days.length - 1
+    if (i >= 0 && days[i].score === 0) i--
+    while (i >= 0 && days[i].score > 0) {
+      currentStreak++
+      i--
+    }
+
+    const rawCols: { week: string; slots: { date: string; data: DayActivity | null }[]; firstOfMonth: string | null }[] = []
+    for (let w = weekStart(fromKey); w <= weekStart(today); w = addDays(w, 7)) {
+      const slots = Array.from({ length: 7 }, (_, offset) => {
+        const date = addDays(w, offset)
+        return { date, data: byDate.get(date) ?? null }
+      })
+      const firstDay = slots.find((s) => s.data !== null && s.date.endsWith('-01'))
+      rawCols.push({ week: w, slots, firstOfMonth: firstDay ? shortMonth(firstDay.date) : null })
+    }
+
+    const cols = rawCols.map((col, idx) => ({
+      week: col.week,
+      slots: col.slots,
+      monthLabel:
+        col.firstOfMonth ?? (idx === 0 && !rawCols[1]?.firstOfMonth ? shortMonth(fromKey) : ''),
+    }))
+
+    return { cols, activeDays, totalDays: days.length, currentStreak, bestStreak }
+  }, [db])
+
+  const heatmapScrollRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const el = heatmapScrollRef.current
+    if (el) el.scrollLeft = el.scrollWidth
+  }, [heatmap.cols.length])
 
   const target = db.settings.weekly_study_target_minutes
   const period = `${shortDate(r.start)} – ${shortDate(r.end)}`
@@ -562,6 +651,74 @@ export function AnalyticsPage() {
               )}
             </>
           )}
+        </RecordCard>
+
+        <RecordCard>
+          <SectionHeader index="07" title="Consistency" meta="Study, tasks and habits per day" />
+          <div className="px-4 sm:px-5 py-4 flex flex-col gap-3">
+            <div ref={heatmapScrollRef} className="overflow-x-auto pb-1">
+              <div
+                className="inline-flex flex-col gap-1.5"
+                role="img"
+                aria-label={`Active on ${heatmap.activeDays} of ${heatmap.totalDays} days`}
+              >
+                <div className="flex items-end gap-[3px]">
+                  <span className="w-7 shrink-0" aria-hidden="true" />
+                  {heatmap.cols.map((col) => (
+                    <div key={col.week} className="w-[12px] shrink-0 overflow-visible h-3.5 flex items-end">
+                      {col.monthLabel && (
+                        <span className="micro !text-[9.5px] leading-none whitespace-nowrap">{col.monthLabel}</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                <div className="flex gap-[3px]">
+                  <div className="w-7 shrink-0 flex flex-col gap-[3px]" aria-hidden="true">
+                    {WEEKDAY_LABELS.map((lbl, idx) => (
+                      <span
+                        key={idx}
+                        className="micro !text-[9.5px] h-[12px] leading-[12px] text-right pr-1.5"
+                      >
+                        {lbl}
+                      </span>
+                    ))}
+                  </div>
+                  {heatmap.cols.map((col) => (
+                    <div key={col.week} className="flex flex-col gap-[3px] shrink-0">
+                      {col.slots.map((slot) =>
+                        slot.data ? (
+                          <span
+                            key={slot.date}
+                            title={dayTooltip(slot.data)}
+                            className={`w-[12px] h-[12px] rounded-[2px] ${ACTIVITY_CLASS[activityLevel(slot.data.score)]}`}
+                          />
+                        ) : (
+                          <span key={slot.date} className="w-[12px] h-[12px]" aria-hidden="true" />
+                        ),
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+              <p className="tabular text-[12px] text-ink-muted">
+                Active on <span className="text-ink">{heatmap.activeDays}</span> of{' '}
+                <span className="text-ink">{heatmap.totalDays}</span> {heatmap.totalDays === 1 ? 'day' : 'days'} · current
+                streak <span className="text-ink">{heatmap.currentStreak}</span>{' '}
+                {heatmap.currentStreak === 1 ? 'day' : 'days'} · best streak{' '}
+                <span className="text-ink">{heatmap.bestStreak}</span> {heatmap.bestStreak === 1 ? 'day' : 'days'}
+              </p>
+              <div className="flex items-center gap-1.5 text-[11.5px] text-ink-muted shrink-0" aria-hidden="true">
+                <span>Less</span>
+                {([0, 1, 2, 3, 4] as const).map((lvl) => (
+                  <span key={lvl} className={`w-[11px] h-[11px] rounded-[2px] ${ACTIVITY_CLASS[lvl]}`} />
+                ))}
+                <span>More</span>
+              </div>
+            </div>
+          </div>
         </RecordCard>
 
         <GradeStandingTable standings={data?.grade_standing ?? []} courses={courses} />
