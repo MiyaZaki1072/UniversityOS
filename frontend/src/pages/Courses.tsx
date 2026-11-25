@@ -11,8 +11,11 @@ import { formatPercent, formatShortDate, formatTime, relativeDue } from '../lib/
 import { COURSE_COLORS } from '../lib/importConfig'
 import {
   addDays,
+  attendanceSummary,
+  courseSessions,
   DEFAULT_SCALE,
   isSU,
+  setAttendance,
   suPassMark,
   suScale,
   fromLocalInput,
@@ -20,6 +23,7 @@ import {
   standingFor,
   todayKey,
   toLocalInput,
+  type AttendanceStatus,
   type LCourse,
   type LExam,
   type LMeeting,
@@ -54,7 +58,16 @@ function nextClass(c: LCourse, semester: Parameters<typeof meetingActiveOn>[2]):
 function CourseFormModal({ open, onClose, course }: { open: boolean; onClose: () => void; course?: LCourse | null }) {
   const { db, mutate } = useAppData()
   const navigate = useNavigate()
-  const [f, setF] = useState({ code: '', name: '', credits: '3', instructor: '', color: COURSE_COLORS[0], grading: 'LETTER' as 'LETTER' | 'SU', pass: '50' })
+  const [f, setF] = useState({
+    code: '',
+    name: '',
+    credits: '3',
+    instructor: '',
+    color: COURSE_COLORS[0],
+    grading: 'LETTER' as 'LETTER' | 'SU',
+    pass: '50',
+    attendanceMin: '',
+  })
   const [errors, setErrors] = useState<Record<string, string>>({})
 
   useEffect(() => {
@@ -70,14 +83,25 @@ function CourseFormModal({ open, onClose, course }: { open: boolean; onClose: ()
             color: course.color,
             grading: isSU(course) ? 'SU' : 'LETTER',
             pass: isSU(course) ? suPassMark(course) : '50',
+            attendanceMin: course.attendance_min_percent ?? '',
           }
-        : { code: '', name: '', credits: '3', instructor: '', color: COURSE_COLORS[db.courses.length % COURSE_COLORS.length], grading: 'LETTER', pass: '50' },
+        : {
+            code: '',
+            name: '',
+            credits: '3',
+            instructor: '',
+            color: COURSE_COLORS[db.courses.length % COURSE_COLORS.length],
+            grading: 'LETTER',
+            pass: '50',
+            attendanceMin: '',
+          },
     )
   }, [open, course, db.courses.length])
 
   const save = (e?: FormEvent) => {
     e?.preventDefault()
     const code = f.code.trim().toUpperCase()
+    const attTrim = f.attendanceMin.trim()
     const errs: Record<string, string> = {}
     if (!code) errs.code = 'Required.'
     else if (db.courses.some((c) => c.code.toUpperCase() === code && c.id !== course?.id)) errs.code = `${code} already exists.`
@@ -85,12 +109,21 @@ function CourseFormModal({ open, onClose, course }: { open: boolean; onClose: ()
     if (!/^#[0-9A-Fa-f]{6}$/.test(f.color)) errs.color = 'Use a color like #D8693A.'
     if (Number.isNaN(Number(f.credits)) || Number(f.credits) < 0) errs.credits = 'Must be 0 or more.'
     if (f.grading === 'SU' && (f.pass === '' || Number.isNaN(Number(f.pass)) || Number(f.pass) < 0 || Number(f.pass) > 100)) errs.pass = '0 to 100.'
+    if (attTrim !== '' && (Number.isNaN(Number(attTrim)) || Number(attTrim) < 0 || Number(attTrim) > 100)) errs.attendanceMin = '0 to 100.'
     setErrors(errs)
     if (Object.keys(errs).length) return
 
     let newId: number | null = null
     mutate((d, nid) => {
-      const values = { code, name: f.name.trim(), credits: f.credits || '0', instructor: f.instructor.trim(), color: f.color, grading: f.grading }
+      const values = {
+        code,
+        name: f.name.trim(),
+        credits: f.credits || '0',
+        instructor: f.instructor.trim(),
+        color: f.color,
+        grading: f.grading,
+        attendance_min_percent: attTrim === '' ? null : attTrim,
+      }
       const scaleFor = (prev: LCourse | undefined) =>
         f.grading === 'SU'
           ? suScale(f.pass)
@@ -153,6 +186,19 @@ function CourseFormModal({ open, onClose, course }: { open: boolean; onClose: ()
           )}
         </div>
         {f.grading === 'SU' && <p className="-mt-2 text-[12.5px] text-ink-muted">S/U courses show S or U and are not counted in your GPA.</p>}
+        <FormField
+          label="Attendance needed (%)"
+          mono
+          type="number"
+          min={0}
+          max={100}
+          step="any"
+          placeholder="80"
+          hint="Leave empty for no rule"
+          value={f.attendanceMin}
+          error={errors.attendanceMin}
+          onChange={(e) => setF({ ...f, attendanceMin: e.target.value })}
+        />
         <div className="flex flex-col gap-1.5">
           <span className="micro !text-ink">Color</span>
           <div className="flex flex-wrap gap-2">
@@ -393,6 +439,13 @@ export function CoursesPage() {
   )
 }
 
+const ATTENDANCE_OPTS: { status: AttendanceStatus; short: string; label: string; activeClass: string }[] = [
+  { status: 'PRESENT', short: 'P', label: 'Present', activeClass: 'bg-sage-wash text-sage-ink border-sage' },
+  { status: 'LATE', short: 'L', label: 'Late', activeClass: 'bg-mustard-wash text-mustard-ink border-mustard' },
+  { status: 'ABSENT', short: 'A', label: 'Absent', activeClass: 'bg-danger-wash text-danger border-danger' },
+  { status: 'EXCUSED', short: 'E', label: 'Excused', activeClass: 'bg-surface-2 text-ink border-border-strong' },
+]
+
 export function CourseDetailPage() {
   const { id } = useParams()
   const { db, mutate } = useAppData()
@@ -401,12 +454,28 @@ export function CourseDetailPage() {
   const [editOpen, setEditOpen] = useState(false)
   const [meetingForm, setMeetingForm] = useState<{ open: boolean; meeting: LMeeting | null }>({ open: false, meeting: null })
   const [examForm, setExamForm] = useState<{ open: boolean; exam: LExam | null }>({ open: false, exam: null })
+  const [showAllSessions, setShowAllSessions] = useState(false)
+
+  useEffect(() => {
+    setShowAllSessions(false)
+  }, [id])
+
+  const today = todayKey()
 
   const meetings = useMemo(
     () => [...(course?.meetings ?? [])].sort((a, b) => a.weekday - b.weekday || a.start_time.localeCompare(b.start_time)),
     [course],
   )
   const exams = useMemo(() => [...(course?.exams ?? [])].sort((a, b) => Date.parse(a.start_at) - Date.parse(b.start_at)), [course])
+  const sessions = useMemo(() => (course ? courseSessions(course, db.semester) : []), [course, db.semester])
+  const attendance = useMemo(() => (course ? attendanceSummary(course, db.semester, today) : null), [course, db.semester, today])
+  const heldSessions = useMemo(() => [...sessions.filter((s) => s.date <= today)].reverse(), [sessions, today])
+  const meetingById = useMemo(() => new Map((course?.meetings ?? []).map((m) => [m.id, m])), [course])
+  const attendanceMap = useMemo(
+    () => new Map((course?.attendance ?? []).map((r) => [`${r.meeting_id}:${r.date}`, r.status])),
+    [course],
+  )
+  const taskTitles = useMemo(() => new Set(db.tasks.map((t) => t.title)), [db.tasks])
 
   if (!course) {
     return (
@@ -452,7 +521,34 @@ export function CourseDetailPage() {
     })
   }
 
+  const markAttendance = (meetingId: number, date: string, status: AttendanceStatus) => {
+    const current = attendanceMap.get(`${meetingId}:${date}`) ?? null
+    const next = current === status ? null : status
+    mutate((d) => {
+      const c = d.courses.find((x) => x.id === course.id)
+      if (c) setAttendance(c, meetingId, date, next)
+    })
+  }
+
+  const addCatchUpTask = (date: string) => {
+    const title = `Catch up: ${course.code} ${date}`
+    mutate((d, nid) => {
+      if (d.tasks.some((t) => t.title === title)) return
+      d.tasks.push({
+        id: nid(),
+        title,
+        course_id: course.id,
+        due_at: fromLocalInput(`${addDays(todayKey(), 3)}T23:59`),
+        status: 'TODO',
+        priority: 'MEDIUM',
+        notes: '',
+        completed_at: null,
+      })
+    })
+  }
+
   const s = standingFor(course)
+  const visibleSessions = showAllSessions ? heldSessions : heldSessions.slice(0, 10)
 
   return (
     <>
@@ -524,6 +620,143 @@ export function CourseDetailPage() {
           <RecordCard>
             <SectionHeader
               index="02"
+              title="Attendance"
+              meta={attendance && attendance.total > 0 ? `${attendance.held} of ${attendance.total} held` : undefined}
+            />
+            {meetings.length === 0 ? (
+              <EmptyState code="NO CLASSES ON FILE" title="Add class times to track attendance." />
+            ) : sessions.length === 0 || !attendance ? (
+              <EmptyState code="NO TERM DATES" title="Set the semester dates to count classes." />
+            ) : (
+              <>
+                <div className="px-4 sm:px-5 py-4 flex flex-col gap-2 border-b border-rule">
+                  <div className="flex items-baseline gap-3">
+                    <span className="tabular text-[30px] leading-none text-ink">
+                      {attendance.percent === null
+                        ? '—'
+                        : `${Number.isInteger(attendance.percent) ? attendance.percent : formatPercent(String(attendance.percent), 1)}%`}
+                    </span>
+                    {attendance.minPercent !== null && (
+                      <span className="tabular text-[12px] text-ink-muted">min {attendance.minPercent}%</span>
+                    )}
+                  </div>
+                  <p className="tabular text-[12.5px] text-ink-muted">
+                    Present {attendance.present} · Late {attendance.late} · Absent {attendance.absent} · Excused {attendance.excused}
+                  </p>
+                  {attendance.status === 'ok' && attendance.canStillMiss !== null && (
+                    <p className="text-[14px] text-ink">
+                      You can still miss <strong className="tabular font-semibold">{attendance.canStillMiss}</strong>{' '}
+                      {attendance.canStillMiss === 1 ? 'class' : 'classes'}.
+                    </p>
+                  )}
+                  {attendance.status === 'close' && attendance.canStillMiss !== null && (
+                    <p className="text-[14px] text-mustard-ink">
+                      {attendance.canStillMiss === 0 ? (
+                        <>
+                          <strong className="tabular font-semibold">0</strong> — don&apos;t miss another one.
+                        </>
+                      ) : (
+                        <>
+                          You can still miss <strong className="tabular font-semibold">{attendance.canStillMiss}</strong>{' '}
+                          {attendance.canStillMiss === 1 ? 'class' : 'classes'}.
+                        </>
+                      )}
+                    </p>
+                  )}
+                  {attendance.status === 'over' && attendance.canStillMiss !== null && (
+                    <p className="text-[14px] text-danger">
+                      Over the limit by <strong className="tabular font-semibold">{Math.abs(attendance.canStillMiss)}</strong>{' '}
+                      {Math.abs(attendance.canStillMiss) === 1 ? 'class' : 'classes'}. You may not be allowed to sit the final.
+                    </p>
+                  )}
+                  {attendance.status === 'none' && (
+                    <p className="text-[13px] text-ink-muted">No attendance rule set. Add one with Edit.</p>
+                  )}
+                  {attendance.unmarked > 0 && (
+                    <p className="tabular text-[12px] text-ink-muted">
+                      {attendance.unmarked} past {attendance.unmarked === 1 ? 'class' : 'classes'} not marked yet
+                    </p>
+                  )}
+                </div>
+
+                {heldSessions.length === 0 ? (
+                  <p className="px-4 sm:px-5 py-4 text-[13px] text-ink-muted">No classes held yet.</p>
+                ) : (
+                  <>
+                    <ul className="divide-y divide-rule">
+                      {visibleSessions.map((session) => {
+                        const m = meetingById.get(session.meeting_id)
+                        const current = attendanceMap.get(`${session.meeting_id}:${session.date}`) ?? null
+                        const catchUpTitle = `Catch up: ${course.code} ${session.date}`
+                        const showCatchUp = current === 'ABSENT' && !taskTitles.has(catchUpTitle)
+                        return (
+                          <li key={`${session.meeting_id}-${session.date}`} className="px-4 sm:px-5 py-2.5 flex flex-col gap-2">
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="min-w-0">
+                                <div className="tabular text-[13px] font-medium text-ink">
+                                  {formatShortDate(`${session.date}T12:00:00+07:00`)}
+                                </div>
+                                {m && (
+                                  <div className="tabular text-[12px] text-ink-muted">
+                                    {formatTime(`${session.date}T${m.start_time}+07:00`)}–{formatTime(`${session.date}T${m.end_time}+07:00`)}
+                                  </div>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-1 shrink-0">
+                                {ATTENDANCE_OPTS.map((opt) => {
+                                  const active = current === opt.status
+                                  return (
+                                    <button
+                                      key={opt.status}
+                                      type="button"
+                                      onClick={() => markAttendance(session.meeting_id, session.date, opt.status)}
+                                      aria-label={opt.label}
+                                      aria-pressed={active}
+                                      title={opt.label}
+                                      className={
+                                        'w-7 h-7 grid place-items-center rounded-xs border tabular text-[12px] font-semibold cursor-pointer transition-colors ' +
+                                        (active
+                                          ? opt.activeClass
+                                          : 'bg-surface-sunken text-ink-muted border-border hover:border-border-strong hover:text-ink')
+                                      }
+                                    >
+                                      {opt.short}
+                                    </button>
+                                  )
+                                })}
+                              </div>
+                            </div>
+                            {showCatchUp && (
+                              <div>
+                                <Button size="sm" variant="secondary" icon={<Plus size={13} />} onClick={() => addCatchUpTask(session.date)}>
+                                  Add catch-up task
+                                </Button>
+                              </div>
+                            )}
+                          </li>
+                        )
+                      })}
+                    </ul>
+                    {heldSessions.length > 10 && (
+                      <div className="border-t border-rule px-4 sm:px-5 py-2.5">
+                        <button
+                          type="button"
+                          onClick={() => setShowAllSessions((v) => !v)}
+                          className="text-[13px] font-medium text-accent-strong hover:underline cursor-pointer"
+                        >
+                          {showAllSessions ? 'Show recent' : `Show all (${heldSessions.length})`}
+                        </button>
+                      </div>
+                    )}
+                  </>
+                )}
+              </>
+            )}
+          </RecordCard>
+
+          <RecordCard>
+            <SectionHeader
+              index="03"
               title="Exams & quizzes"
               action={
                 <Button size="sm" icon={<Plus size={14} />} onClick={() => setExamForm({ open: true, exam: null })}>
@@ -589,7 +822,7 @@ export function CourseDetailPage() {
 
           <RecordCard>
             <SectionHeader
-              index="03"
+              index="04"
               title="Open tasks"
               meta={`${tasks.length}`}
               action={
@@ -614,7 +847,7 @@ export function CourseDetailPage() {
 
           {links.length > 0 && (
             <RecordCard>
-              <SectionHeader index="04" title="Links" />
+              <SectionHeader index="05" title="Links" />
               <ul className="divide-y divide-rule">
                 {links.map((r) => (
                   <li key={r.id} className="px-4 sm:px-5 py-2.5">

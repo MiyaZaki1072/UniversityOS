@@ -55,6 +55,14 @@ export interface LResource {
   description: string
 }
 
+export type AttendanceStatus = 'PRESENT' | 'LATE' | 'ABSENT' | 'EXCUSED'
+
+export interface LAttendance {
+  meeting_id: number
+  date: string // YYYY-MM-DD
+  status: AttendanceStatus
+}
+
 export interface LCourse {
   id: number
   code: string
@@ -73,6 +81,10 @@ export interface LCourse {
   expected_grade?: string | null
   /** LETTER (default) or SU: satisfactory/unsatisfactory, never counted in GPA. */
   grading?: 'LETTER' | 'SU'
+  /** Minimum attendance percentage required (e.g. "80"); null/missing = no rule. */
+  attendance_min_percent?: string | null
+  /** At most one record per (meeting_id, date). */
+  attendance?: LAttendance[]
 }
 
 export const isSU = (c: Pick<LCourse, 'grading'>) => c.grading === 'SU'
@@ -640,6 +652,127 @@ export function meetingActiveOn(m: LMeeting, dateKey: string, semester: LSemeste
   const from = m.starts_on ?? semester?.start_date ?? null
   const to = m.ends_on ?? semester?.end_date ?? null
   return m.weekday === weekdayOf(dateKey) && (!from || dateKey >= from) && (!to || dateKey <= to)
+}
+
+/* ------------------------------------------------------------------ */
+/* Attendance                                                          */
+/* ------------------------------------------------------------------ */
+
+const isDateKey = (v: string | null | undefined): v is string =>
+  typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) && !Number.isNaN(Date.parse(`${v}T12:00:00Z`))
+
+/** Every scheduled session of the course across the term, sorted by date then start time. */
+export function courseSessions(c: LCourse, semester: LSemester | null): { meeting_id: number; date: string }[] {
+  const semStart = isDateKey(semester?.start_date) ? semester!.start_date : null
+  const semEnd = isDateKey(semester?.end_date) ? semester!.end_date : null
+
+  const countable: { meeting: LMeeting; from: string; to: string }[] = []
+  for (const m of c.meetings) {
+    const from = (isDateKey(m.starts_on) ? m.starts_on : null) ?? semStart
+    const to = (isDateKey(m.ends_on) ? m.ends_on : null) ?? semEnd
+    if (from !== null && to !== null && from <= to) {
+      countable.push({ meeting: m, from, to })
+    }
+  }
+  if (countable.length === 0) return []
+
+  let rangeStart = countable[0].from
+  let rangeEnd = countable[0].to
+  for (const item of countable) {
+    if (item.from < rangeStart) rangeStart = item.from
+    if (item.to > rangeEnd) rangeEnd = item.to
+  }
+
+  const ordered = countable
+    .map((x) => x.meeting)
+    .sort((a, b) => a.start_time.localeCompare(b.start_time) || a.id - b.id)
+
+  const out: { meeting_id: number; date: string }[] = []
+  for (let d = rangeStart; d <= rangeEnd; d = addDays(d, 1)) {
+    for (const m of ordered) {
+      if (meetingActiveOn(m, d, semester)) {
+        out.push({ meeting_id: m.id, date: d })
+      }
+    }
+  }
+  return out
+}
+
+export interface AttendanceSummary {
+  total: number
+  held: number
+  present: number
+  late: number
+  absent: number
+  excused: number
+  unmarked: number
+  percent: number | null
+  minPercent: number | null
+  maxAbsences: number | null
+  canStillMiss: number | null
+  status: 'none' | 'ok' | 'close' | 'over'
+}
+
+export function attendanceSummary(c: LCourse, semester: LSemester | null, today: string): AttendanceSummary {
+  const sessions = courseSessions(c, semester)
+  const records = new Map<string, AttendanceStatus>()
+  for (const r of c.attendance ?? []) {
+    records.set(`${r.meeting_id}:${r.date}`, r.status)
+  }
+
+  let held = 0
+  let present = 0
+  let late = 0
+  let absent = 0
+  let excused = 0
+  let unmarked = 0
+
+  for (const s of sessions) {
+    const isHeld = s.date <= today
+    if (isHeld) held++
+    const st = records.get(`${s.meeting_id}:${s.date}`)
+    if (st === 'PRESENT') present++
+    else if (st === 'LATE') late++
+    else if (st === 'ABSENT') absent++
+    else if (st === 'EXCUSED') excused++
+    else if (isHeld) unmarked++
+  }
+
+  const total = sessions.length
+  const counted = present + late + absent
+  const percent = counted > 0 ? ((present + late) / counted) * 100 : null
+
+  const rawMin = c.attendance_min_percent?.trim() ?? ''
+  const parsedMin = rawMin !== '' ? Number(rawMin) : NaN
+  const minPercent = Number.isFinite(parsedMin) && parsedMin >= 0 && parsedMin <= 100 ? parsedMin : null
+
+  const maxAbsences =
+    minPercent !== null && total > 0 ? Math.floor(((total - excused) * (100 - minPercent)) / 100 + 1e-9) : null
+  const canStillMiss = maxAbsences !== null ? maxAbsences - absent : null
+  const status: AttendanceSummary['status'] =
+    canStillMiss === null ? 'none' : canStillMiss < 0 ? 'over' : canStillMiss <= 1 ? 'close' : 'ok'
+
+  return {
+    total,
+    held,
+    present,
+    late,
+    absent,
+    excused,
+    unmarked,
+    percent,
+    minPercent,
+    maxAbsences,
+    canStillMiss,
+    status,
+  }
+}
+
+/** Insert, replace, or remove (null) an attendance record on a course. */
+export function setAttendance(c: LCourse, meeting_id: number, date: string, status: AttendanceStatus | null): void {
+  const next = (c.attendance ?? []).filter((r) => !(r.meeting_id === meeting_id && r.date === date))
+  if (status !== null) next.push({ meeting_id, date, status })
+  c.attendance = next
 }
 
 /** All occurrences between two dates (inclusive), sorted by start. */
