@@ -15,6 +15,7 @@ import {
   courseSessions,
   DEFAULT_SCALE,
   isSU,
+  reviewTopic,
   setAttendance,
   suPassMark,
   suScale,
@@ -23,10 +24,14 @@ import {
   standingFor,
   todayKey,
   toLocalInput,
+  topicNextReview,
+  topicStats,
   type AttendanceStatus,
+  type Confidence,
   type LCourse,
   type LExam,
   type LMeeting,
+  type LTopic,
 } from '../lib/localDb'
 import { useAppData } from '../lib/store'
 
@@ -446,6 +451,15 @@ const ATTENDANCE_OPTS: { status: AttendanceStatus; short: string; label: string;
   { status: 'EXCUSED', short: 'E', label: 'Excused', activeClass: 'bg-surface-2 text-ink border-border-strong' },
 ]
 
+const CONFIDENCE_OPTS: { value: Confidence; short: string; label: string; activeClass: string }[] = [
+  { value: 'RED', short: 'R', label: 'Confident: red', activeClass: 'bg-danger-wash text-danger border-danger' },
+  { value: 'AMBER', short: 'A', label: 'Confident: amber', activeClass: 'bg-mustard-wash text-mustard-ink border-mustard' },
+  { value: 'GREEN', short: 'G', label: 'Confident: green', activeClass: 'bg-sage-wash text-sage-ink border-sage' },
+]
+
+const shortDayMonth = (dateKey: string) =>
+  formatShortDate(`${dateKey}T12:00:00+07:00`).replace(/^[A-Za-z]+,\s*/, '')
+
 export function CourseDetailPage() {
   const { id } = useParams()
   const { db, mutate } = useAppData()
@@ -455,9 +469,19 @@ export function CourseDetailPage() {
   const [meetingForm, setMeetingForm] = useState<{ open: boolean; meeting: LMeeting | null }>({ open: false, meeting: null })
   const [examForm, setExamForm] = useState<{ open: boolean; exam: LExam | null }>({ open: false, exam: null })
   const [showAllSessions, setShowAllSessions] = useState(false)
+  const [topicInput, setTopicInput] = useState('')
+  const [bulkTopics, setBulkTopics] = useState(false)
+  const [bulkInput, setBulkInput] = useState('')
+  const [editingTopicId, setEditingTopicId] = useState<number | null>(null)
+  const [editingTopicTitle, setEditingTopicTitle] = useState('')
 
   useEffect(() => {
     setShowAllSessions(false)
+    setTopicInput('')
+    setBulkTopics(false)
+    setBulkInput('')
+    setEditingTopicId(null)
+    setEditingTopicTitle('')
   }, [id])
 
   const today = todayKey()
@@ -475,6 +499,7 @@ export function CourseDetailPage() {
     () => new Map((course?.attendance ?? []).map((r) => [`${r.meeting_id}:${r.date}`, r.status])),
     [course],
   )
+  const topicsStats = useMemo(() => (course ? topicStats(course, today) : null), [course, today])
   const taskTitles = useMemo(() => new Set(db.tasks.map((t) => t.title)), [db.tasks])
 
   if (!course) {
@@ -547,7 +572,68 @@ export function CourseDetailPage() {
     })
   }
 
+  const addSingleTopic = (e: FormEvent) => {
+    e.preventDefault()
+    const title = topicInput.trim()
+    if (!title) return
+    mutate((d, nid) => {
+      const c = d.courses.find((x) => x.id === course.id)
+      if (!c) return
+      c.topics ??= []
+      c.topics.push({ id: nid(), title, confidence: null, last_reviewed: null, review_count: 0 })
+    })
+    setTopicInput('')
+  }
+
+  const addBulkTopics = (e: FormEvent) => {
+    e.preventDefault()
+    const lines = bulkInput
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+    if (lines.length === 0) return
+    mutate((d, nid) => {
+      const c = d.courses.find((x) => x.id === course.id)
+      if (!c) return
+      c.topics ??= []
+      for (const title of lines) {
+        c.topics.push({ id: nid(), title, confidence: null, last_reviewed: null, review_count: 0 })
+      }
+    })
+    setBulkInput('')
+    setBulkTopics(false)
+  }
+
+  const commitTopicRename = (topicId: number) => {
+    const title = editingTopicTitle.trim()
+    setEditingTopicId(null)
+    if (!title) return
+    mutate((d) => {
+      const c = d.courses.find((x) => x.id === course.id)
+      const t = c?.topics?.find((x) => x.id === topicId)
+      if (t) t.title = title
+    })
+  }
+
+  const rateTopic = (topicId: number, confidence: Confidence) => {
+    mutate((d) => {
+      const c = d.courses.find((x) => x.id === course.id)
+      const t = c?.topics?.find((x) => x.id === topicId)
+      if (t) reviewTopic(t, confidence, todayKey())
+    })
+  }
+
+  const removeTopic = (t: LTopic) => {
+    if (!window.confirm(`Delete "${t.title}"?`)) return
+    mutate((d) => {
+      const c = d.courses.find((x) => x.id === course.id)
+      if (c && c.topics) c.topics = c.topics.filter((x) => x.id !== t.id)
+    })
+    if (editingTopicId === t.id) setEditingTopicId(null)
+  }
+
   const s = standingFor(course)
+  const topics = course.topics ?? []
   const visibleSessions = showAllSessions ? heldSessions : heldSessions.slice(0, 10)
 
   return (
@@ -757,6 +843,178 @@ export function CourseDetailPage() {
           <RecordCard>
             <SectionHeader
               index="03"
+              title="Topics"
+              meta={
+                topicsStats && topicsStats.total > 0
+                  ? `R ${topicsStats.red} · A ${topicsStats.amber} · G ${topicsStats.green} · — ${topicsStats.unrated}`
+                  : undefined
+              }
+              action={
+                <button
+                  type="button"
+                  onClick={() => setBulkTopics((v) => !v)}
+                  className="text-[13px] font-medium text-accent-strong hover:underline cursor-pointer"
+                >
+                  {bulkTopics ? 'Add one' : 'Add several'}
+                </button>
+              }
+            />
+
+            {topicsStats && topicsStats.total > 0 && (
+              <div className="px-4 sm:px-5 pt-3 flex flex-col gap-1.5">
+                <div className="flex h-1.5 w-full overflow-hidden rounded-xs bg-surface-sunken" aria-hidden="true">
+                  {topicsStats.red > 0 && (
+                    <div className="bg-danger" style={{ width: `${(topicsStats.red / topicsStats.total) * 100}%` }} />
+                  )}
+                  {topicsStats.amber > 0 && (
+                    <div className="bg-mustard" style={{ width: `${(topicsStats.amber / topicsStats.total) * 100}%` }} />
+                  )}
+                  {topicsStats.green > 0 && (
+                    <div className="bg-sage" style={{ width: `${(topicsStats.green / topicsStats.total) * 100}%` }} />
+                  )}
+                  {topicsStats.unrated > 0 && (
+                    <div className="bg-border" style={{ width: `${(topicsStats.unrated / topicsStats.total) * 100}%` }} />
+                  )}
+                </div>
+                <div className="sm:hidden tabular text-[11.5px] text-ink-muted">
+                  R {topicsStats.red} · A {topicsStats.amber} · G {topicsStats.green} · — {topicsStats.unrated}
+                </div>
+              </div>
+            )}
+
+            {bulkTopics ? (
+              <form onSubmit={addBulkTopics} className="px-4 sm:px-5 py-3 flex flex-col gap-2 border-b border-rule">
+                <textarea
+                  rows={4}
+                  value={bulkInput}
+                  onChange={(e) => setBulkInput(e.target.value)}
+                  placeholder="One topic per line..."
+                  aria-label="Topics, one per line"
+                  className="w-full p-2.5 bg-surface-sunken border border-border-strong rounded-xs text-[14px] text-ink placeholder:text-ink-faint focus:outline-none focus:border-accent"
+                />
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[12px] text-ink-muted">One topic per line</span>
+                  <Button type="submit" size="sm" variant="primary" icon={<Plus size={14} />} disabled={!bulkInput.trim()}>
+                    Add topics
+                  </Button>
+                </div>
+              </form>
+            ) : (
+              <form onSubmit={addSingleTopic} className="px-4 sm:px-5 py-3 flex items-center gap-2 border-b border-rule">
+                <input
+                  type="text"
+                  value={topicInput}
+                  onChange={(e) => setTopicInput(e.target.value)}
+                  placeholder="Add a topic or lecture..."
+                  aria-label="New topic title"
+                  className="h-9 flex-1 min-w-0 px-2.5 bg-surface-sunken border border-border-strong rounded-xs text-[14px] text-ink placeholder:text-ink-faint focus:outline-none focus:border-accent"
+                />
+                <Button type="submit" size="sm" variant="secondary" icon={<Plus size={14} />} disabled={!topicInput.trim()}>
+                  Add
+                </Button>
+              </form>
+            )}
+
+            {topics.length === 0 ? (
+              <EmptyState
+                code="NO TOPICS ON FILE"
+                title="No topics yet"
+                body="Add the topics or lectures of this course, then rate how well you know each one after revising."
+              />
+            ) : (
+              <ul className="divide-y divide-rule">
+                {topics.map((t) => {
+                  const next = topicNextReview(t)
+                  const overdue = next !== null && next < today
+                  const isEditing = editingTopicId === t.id
+                  return (
+                    <li key={t.id} className="px-4 sm:px-5 py-2.5 flex items-start justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        {isEditing ? (
+                          <input
+                            type="text"
+                            autoFocus
+                            value={editingTopicTitle}
+                            onChange={(e) => setEditingTopicTitle(e.target.value)}
+                            onBlur={() => commitTopicRename(t.id)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault()
+                                commitTopicRename(t.id)
+                              } else if (e.key === 'Escape') {
+                                setEditingTopicId(null)
+                              }
+                            }}
+                            aria-label="Rename topic"
+                            className="h-8 w-full min-w-0 px-2 bg-surface border border-border-strong rounded-xs text-[14px] text-ink focus:outline-none focus:border-accent"
+                          />
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingTopicId(t.id)
+                              setEditingTopicTitle(t.title)
+                            }}
+                            className="text-left font-medium text-ink hover:underline underline-offset-2 decoration-ink-muted break-words cursor-text"
+                          >
+                            {t.title}
+                          </button>
+                        )}
+                        {t.review_count > 0 && t.last_reviewed ? (
+                          <div className="mt-0.5 tabular text-[12px] text-ink-muted">
+                            Reviewed {t.review_count}× · last {shortDayMonth(t.last_reviewed)}
+                            {next && (
+                              <>
+                                {' · '}
+                                <span className={overdue ? 'text-danger font-medium' : ''}>next {shortDayMonth(next)}</span>
+                              </>
+                            )}
+                          </div>
+                        ) : (
+                          <div className="mt-0.5 tabular text-[12px] text-ink-muted">Not reviewed yet</div>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0 pt-0.5">
+                        {CONFIDENCE_OPTS.map((opt) => {
+                          const active = t.confidence === opt.value
+                          return (
+                            <button
+                              key={opt.value}
+                              type="button"
+                              onClick={() => rateTopic(t.id, opt.value)}
+                              aria-label={opt.label}
+                              aria-pressed={active}
+                              title={opt.label}
+                              className={
+                                'w-7 h-7 grid place-items-center rounded-xs border tabular text-[12px] font-semibold cursor-pointer transition-colors ' +
+                                (active
+                                  ? opt.activeClass
+                                  : 'bg-surface-sunken text-ink-muted border-border hover:border-border-strong hover:text-ink')
+                              }
+                            >
+                              {opt.short}
+                            </button>
+                          )
+                        })}
+                        <button
+                          type="button"
+                          onClick={() => removeTopic(t)}
+                          className="p-1.5 text-ink-muted hover:text-danger cursor-pointer"
+                          aria-label={`Delete ${t.title}`}
+                        >
+                          <Trash2 size={15} />
+                        </button>
+                      </div>
+                    </li>
+                  )
+                })}
+              </ul>
+            )}
+          </RecordCard>
+
+          <RecordCard>
+            <SectionHeader
+              index="04"
               title="Exams & quizzes"
               action={
                 <Button size="sm" icon={<Plus size={14} />} onClick={() => setExamForm({ open: true, exam: null })}>
@@ -822,7 +1080,7 @@ export function CourseDetailPage() {
 
           <RecordCard>
             <SectionHeader
-              index="04"
+              index="05"
               title="Open tasks"
               meta={`${tasks.length}`}
               action={
@@ -847,7 +1105,7 @@ export function CourseDetailPage() {
 
           {links.length > 0 && (
             <RecordCard>
-              <SectionHeader index="05" title="Links" />
+              <SectionHeader index="06" title="Links" />
               <ul className="divide-y divide-rule">
                 {links.map((r) => (
                   <li key={r.id} className="px-4 sm:px-5 py-2.5">

@@ -63,6 +63,16 @@ export interface LAttendance {
   status: AttendanceStatus
 }
 
+export type Confidence = 'RED' | 'AMBER' | 'GREEN'
+
+export interface LTopic {
+  id: number
+  title: string
+  confidence: Confidence | null // null = not rated yet
+  last_reviewed: string | null // YYYY-MM-DD
+  review_count: number
+}
+
 export interface LCourse {
   id: number
   code: string
@@ -85,6 +95,8 @@ export interface LCourse {
   attendance_min_percent?: string | null
   /** At most one record per (meeting_id, date). */
   attendance?: LAttendance[]
+  /** Study topics / chapters for retrospective revision tracking. */
+  topics?: LTopic[]
 }
 
 export const isSU = (c: Pick<LCourse, 'grading'>) => c.grading === 'SU'
@@ -773,6 +785,91 @@ export function setAttendance(c: LCourse, meeting_id: number, date: string, stat
   const next = (c.attendance ?? []).filter((r) => !(r.meeting_id === meeting_id && r.date === date))
   if (status !== null) next.push({ meeting_id, date, status })
   c.attendance = next
+}
+
+/* ------------------------------------------------------------------ */
+/* Topics & revision queue                                             */
+/* ------------------------------------------------------------------ */
+
+export const REVIEW_GAP_DAYS: Record<Confidence, number> = { RED: 1, AMBER: 4, GREEN: 14 }
+
+/** Next scheduled review date for a topic; null when never reviewed (due now). */
+export function topicNextReview(t: LTopic): string | null {
+  if (!t.last_reviewed || !t.confidence) return null
+  return addDays(t.last_reviewed, REVIEW_GAP_DAYS[t.confidence])
+}
+
+/** Log a topic review. Re-rating on the same day updates confidence without incrementing count. */
+export function reviewTopic(t: LTopic, confidence: Confidence, today: string): void {
+  const alreadyToday = t.last_reviewed === today
+  t.confidence = confidence
+  t.last_reviewed = today
+  if (!alreadyToday) t.review_count += 1
+}
+
+export interface DueTopic {
+  course: LCourse
+  topic: LTopic
+  next: string | null
+  overdueDays: number
+}
+
+const CONFIDENCE_RANK: Record<Confidence, number> = { RED: 0, AMBER: 1, GREEN: 3 }
+const confidenceRank = (c: Confidence | null) => (c === null ? 2 : CONFIDENCE_RANK[c])
+
+const daysBetween = (fromKey: string, toKey: string) =>
+  Math.round((Date.parse(`${toKey}T12:00:00Z`) - Date.parse(`${fromKey}T12:00:00Z`)) / 86_400_000)
+
+/** Topics due on or before `today` (including never-reviewed), sorted by confidence then oldest due date. */
+export function dueTopics(courses: LCourse[], today: string): DueTopic[] {
+  const out: DueTopic[] = []
+  for (const course of courses) {
+    for (const topic of course.topics ?? []) {
+      const next = topicNextReview(topic)
+      if (next !== null && next > today) continue
+      const overdueDays = next === null ? 0 : Math.max(0, daysBetween(next, today))
+      out.push({ course, topic, next, overdueDays })
+    }
+  }
+  out.sort((a, b) => {
+    const rankDiff = confidenceRank(a.topic.confidence) - confidenceRank(b.topic.confidence)
+    if (rankDiff !== 0) return rankDiff
+    if (a.next && b.next) return a.next.localeCompare(b.next)
+    if (a.next) return -1
+    if (b.next) return 1
+    return a.topic.id - b.topic.id
+  })
+  return out
+}
+
+export interface TopicStats {
+  total: number
+  red: number
+  amber: number
+  green: number
+  unrated: number
+  due: number
+}
+
+export function topicStats(c: LCourse, today: string): TopicStats {
+  const topics = c.topics ?? []
+  let red = 0
+  let amber = 0
+  let green = 0
+  let unrated = 0
+  let due = 0
+
+  for (const t of topics) {
+    if (t.confidence === 'RED') red++
+    else if (t.confidence === 'AMBER') amber++
+    else if (t.confidence === 'GREEN') green++
+    else unrated++
+
+    const next = topicNextReview(t)
+    if (next === null || next <= today) due++
+  }
+
+  return { total: topics.length, red, amber, green, unrated, due }
 }
 
 /** All occurrences between two dates (inclusive), sorted by start. */

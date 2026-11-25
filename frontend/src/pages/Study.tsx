@@ -1,5 +1,6 @@
 import { ChevronDown, Pause, Pencil, Play, Plus, SkipForward, Square, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { Link } from 'react-router-dom'
 import { Button } from '../components/ui/Button'
 import { FormField } from '../components/ui/FormField'
 import { Modal } from '../components/ui/Overlay'
@@ -8,19 +9,61 @@ import { SelectField, TextAreaField } from '../components/ui/SelectField'
 import { formatMinutes, formatShortDate, formatTime } from '../lib/format'
 import {
   activeSession,
+  dueTopics,
   fromLocalInput,
+  reviewTopic,
   sessionMinutes,
   studySummary,
   todayKey,
   toLocalInput,
   weekdayOf,
   weekStart,
+  type Confidence,
   type LStudySession,
 } from '../lib/localDb'
 import { useAppData } from '../lib/store'
 import { WeeklyActivity } from './dashboard/WeeklyActivity'
 
 const LOG_LIMIT = 30
+const REVISION_LIMIT = 8
+
+const CONFIDENCE_OPTS: {
+  value: Confidence
+  short: string
+  label: string
+  name: string
+  activeClass: string
+  dotClass: string
+  textClass: string
+}[] = [
+  {
+    value: 'RED',
+    short: 'R',
+    label: 'Confident: red',
+    name: 'Red',
+    activeClass: 'bg-danger-wash text-danger border-danger',
+    dotClass: 'bg-danger',
+    textClass: 'text-danger',
+  },
+  {
+    value: 'AMBER',
+    short: 'A',
+    label: 'Confident: amber',
+    name: 'Amber',
+    activeClass: 'bg-mustard-wash text-mustard-ink border-mustard',
+    dotClass: 'bg-mustard',
+    textClass: 'text-mustard-ink',
+  },
+  {
+    value: 'GREEN',
+    short: 'G',
+    label: 'Confident: green',
+    name: 'Green',
+    activeClass: 'bg-sage-wash text-sage-ink border-sage',
+    dotClass: 'bg-sage',
+    textClass: 'text-sage-ink',
+  },
+]
 
 const pad = (n: number) => String(n).padStart(2, '0')
 
@@ -286,7 +329,20 @@ export function StudyPage() {
   const courses = useMemo(() => new Map(db.courses.map((c) => [c.id, c])), [db.courses])
   const summary = studySummary(db, now)
   const target = db.settings.weekly_study_target_minutes
-  const todayIndex = weekdayOf(todayKey(now))
+  const today = todayKey(now)
+  const todayIndex = weekdayOf(today)
+  const hasAnyTopics = useMemo(() => db.courses.some((c) => (c.topics?.length ?? 0) > 0), [db.courses])
+  const revisionQueue = useMemo(() => dueTopics(db.courses, today), [db.courses, today])
+  const visibleQueue = revisionQueue.slice(0, REVISION_LIMIT)
+  const extraQueueCount = Math.max(0, revisionQueue.length - visibleQueue.length)
+
+  const logTopicReview = (courseId: number, topicId: number, confidence: Confidence) => {
+    mutate((d) => {
+      const c = d.courses.find((x) => x.id === courseId)
+      const t = c?.topics?.find((x) => x.id === topicId)
+      if (t) reviewTopic(t, confidence, todayKey())
+    })
+  }
 
   const [targetText, setTargetText] = useState(String(target / 60))
   useEffect(() => {
@@ -610,6 +666,85 @@ export function StudyPage() {
                 Start
               </Button>
             </div>
+          )}
+        </RecordCard>
+
+        <RecordCard>
+          <SectionHeader
+            index="02"
+            title="Revision Queue"
+            meta={revisionQueue.length > 0 ? `${revisionQueue.length} due` : undefined}
+          />
+          {!hasAnyTopics ? (
+            <p className="px-4 sm:px-5 py-4 text-[13px] text-ink-muted">Nothing to revise today. Add topics on a course page.</p>
+          ) : revisionQueue.length === 0 ? (
+            <p className="px-4 sm:px-5 py-4 text-[13px] text-ink-muted">All caught up.</p>
+          ) : (
+            <>
+              <ul className="divide-y divide-rule">
+                {visibleQueue.map(({ course, topic, next, overdueDays }) => {
+                  const conf = CONFIDENCE_OPTS.find((o) => o.value === topic.confidence)
+                  const dueLabel =
+                    next === null
+                      ? 'new'
+                      : overdueDays > 0
+                        ? `${overdueDays} ${overdueDays === 1 ? 'day' : 'days'} overdue`
+                        : 'due today'
+                  return (
+                    <li key={`${course.id}-${topic.id}`} className="flex items-start gap-3 px-4 sm:px-5 py-3">
+                      <span
+                        className="w-[3px] self-stretch rounded-[1px] shrink-0"
+                        style={{ background: course.color }}
+                        aria-hidden="true"
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 tabular text-[12px] text-ink-muted">
+                          <Link to={`/courses/${course.id}`} className="hover:text-ink hover:underline">
+                            {course.code}
+                          </Link>
+                          {conf && (
+                            <span className={`inline-flex items-center gap-1 ${conf.textClass}`}>
+                              <span className={`w-1.5 h-1.5 rounded-full ${conf.dotClass}`} aria-hidden="true" />
+                              {conf.name}
+                            </span>
+                          )}
+                          <span className={overdueDays > 0 ? 'text-danger font-medium' : ''}>· {dueLabel}</span>
+                        </div>
+                        <div className="mt-0.5 font-medium text-ink leading-snug break-words">{topic.title}</div>
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0 pt-0.5">
+                        {CONFIDENCE_OPTS.map((opt) => {
+                          const active = topic.confidence === opt.value
+                          return (
+                            <button
+                              key={opt.value}
+                              type="button"
+                              onClick={() => logTopicReview(course.id, topic.id, opt.value)}
+                              aria-label={opt.label}
+                              aria-pressed={active}
+                              title={opt.label}
+                              className={
+                                'w-7 h-7 grid place-items-center rounded-xs border tabular text-[12px] font-semibold cursor-pointer transition-colors ' +
+                                (active
+                                  ? opt.activeClass
+                                  : 'bg-surface-sunken text-ink-muted border-border hover:border-border-strong hover:text-ink')
+                              }
+                            >
+                              {opt.short}
+                            </button>
+                          )
+                        })}
+                      </div>
+                    </li>
+                  )
+                })}
+              </ul>
+              {extraQueueCount > 0 && (
+                <div className="border-t border-rule px-4 sm:px-5 py-2.5 tabular text-[12px] text-ink-muted">
+                  {extraQueueCount} more
+                </div>
+              )}
+            </>
           )}
         </RecordCard>
 
